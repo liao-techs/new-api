@@ -72,4 +72,10 @@ const (
 	// fallback in authHelper (finishAdminAudit) skips its record to avoid
 	// duplicate entries.
 	ContextKeyAuditLogged ContextKey = "audit_logged"
+
+	// ContextKeyAuditDetail carries a map[string]any of handler-supplied detail
+	// merged into the fallback audit record. Use it when the route alone does not
+	// identify what was affected, e.g. a filtered bulk delete driven by query
+	// params, which the fallback does not capture.
+	ContextKeyAuditDetail ContextKey = "audit_detail"
 )

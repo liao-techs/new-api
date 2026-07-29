@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"hash/fnv"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/pkg/cachex"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -26,13 +28,26 @@ const (
 	ginKeyChannelAffinityLogInfo    = "channel_affinity_log_info"
 	ginKeyChannelAffinitySkipRetry  = "channel_affinity_skip_retry_on_failure"
 
-	channelAffinityCacheNamespace           = "new-api:channel_affinity:v1"
+	// v2 stores a struct instead of a bare channel id. Entries written by v1 are
+	// left untouched under the old namespace and expire on their own TTL.
+	channelAffinityCacheNamespace           = "new-api:channel_affinity:v2"
 	channelAffinityUsageCacheStatsNamespace = "new-api:channel_affinity_usage_cache_stats:v1"
 )
 
+// ChannelAffinityEntry is the cached value behind one affinity key. It keeps the
+// requester identity alongside the pinned channel so admin APIs can answer
+// "which channels is this user pinned to" and "what is pinned to this channel"
+// without a second lookup path.
+type ChannelAffinityEntry struct {
+	ChannelID int   `json:"channel_id"`
+	UserID    int   `json:"user_id"`
+	TokenID   int   `json:"token_id"`
+	UpdatedAt int64 `json:"updated_at"`
+}
+
 var (
 	channelAffinityCacheOnce sync.Once
-	channelAffinityCache     *cachex.HybridCache[int]
+	channelAffinityCache     *cachex.HybridCache[ChannelAffinityEntry]
 
 	channelAffinityUsageCacheStatsOnce  sync.Once
 	channelAffinityUsageCacheStatsCache *cachex.HybridCache[ChannelAffinityUsageCacheCounters]
@@ -78,7 +93,7 @@ type ChannelAffinityCacheStats struct {
 	CacheAlgo     string         `json:"cache_algo"`
 }
 
-func getChannelAffinityCache() *cachex.HybridCache[int] {
+func getChannelAffinityCache() *cachex.HybridCache[ChannelAffinityEntry] {
 	channelAffinityCacheOnce.Do(func() {
 		setting := operation_setting.GetChannelAffinitySetting()
 		capacity := setting.MaxEntries
@@ -90,15 +105,15 @@ func getChannelAffinityCache() *cachex.HybridCache[int] {
 			defaultTTLSeconds = 3600
 		}
 
-		channelAffinityCache = cachex.NewHybridCache[int](cachex.HybridCacheConfig[int]{
+		channelAffinityCache = cachex.NewHybridCache[ChannelAffinityEntry](cachex.HybridCacheConfig[ChannelAffinityEntry]{
 			Namespace: cachex.Namespace(channelAffinityCacheNamespace),
 			Redis:     common.RDB,
 			RedisEnabled: func() bool {
 				return common.RedisEnabled && common.RDB != nil
 			},
-			RedisCodec: cachex.IntCodec{},
-			Memory: func() *hot.HotCache[string, int] {
-				return hot.NewHotCache[string, int](hot.LRU, capacity).
+			RedisCodec: cachex.JSONCodec[ChannelAffinityEntry]{},
+			Memory: func() *hot.HotCache[string, ChannelAffinityEntry] {
+				return hot.NewHotCache[string, ChannelAffinityEntry](hot.LRU, capacity).
 					WithTTL(time.Duration(defaultTTLSeconds) * time.Second).
 					WithJanitor().
 					Build()
@@ -193,6 +208,227 @@ func GetChannelAffinityCacheStats() ChannelAffinityCacheStats {
 		CacheCapacity: mainCap,
 		CacheAlgo:     mainAlgo,
 	}
+}
+
+// ChannelAffinityEntryView is one decoded affinity binding exposed to admin APIs.
+// The raw affinity value is deliberately reduced to a fingerprint and a hint,
+// matching what the usage-cache stats endpoint already exposes, so the two can be
+// cross-referenced by key_fp without ever returning the caller's session token.
+type ChannelAffinityEntryView struct {
+	RuleName       string `json:"rule_name"`
+	ModelName      string `json:"model_name,omitempty"`
+	UsingGroup     string `json:"using_group,omitempty"`
+	KeyFingerprint string `json:"key_fp"`
+	KeyHint        string `json:"key_hint"`
+	ChannelID      int    `json:"channel_id"`
+	UserID         int    `json:"user_id"`
+	TokenID        int    `json:"token_id"`
+	UpdatedAt      int64  `json:"updated_at"`
+}
+
+// ChannelAffinityEntryFilter narrows a scan. Zero-valued fields are ignored.
+type ChannelAffinityEntryFilter struct {
+	ChannelID int
+	UserID    int
+	RuleName  string
+}
+
+type ChannelAffinityEntryList struct {
+	Total       int                        `json:"total"`
+	Returned    int                        `json:"returned"`
+	ByChannelID map[string]int             `json:"by_channel_id"`
+	ByUserID    map[string]int             `json:"by_user_id"`
+	Entries     []ChannelAffinityEntryView `json:"entries"`
+}
+
+const (
+	channelAffinityEntriesDefaultLimit = 100
+	channelAffinityEntriesMaxLimit     = 1000
+)
+
+// affinityRulesByName indexes rules that embed their name in the cache key.
+// Rules with include_rule_name disabled cannot be attributed back to a rule and
+// are reported as unknown, consistent with GetChannelAffinityCacheStats.
+func affinityRulesByName() map[string]operation_setting.ChannelAffinityRule {
+	setting := operation_setting.GetChannelAffinitySetting()
+	if setting == nil {
+		return map[string]operation_setting.ChannelAffinityRule{}
+	}
+	out := make(map[string]operation_setting.ChannelAffinityRule, len(setting.Rules))
+	for _, r := range setting.Rules {
+		name := strings.TrimSpace(r.Name)
+		if name == "" || !r.IncludeRuleName {
+			continue
+		}
+		out[name] = r
+	}
+	return out
+}
+
+// parseChannelAffinityKey splits a fully namespaced key back into its segments.
+// The affinity value is always the trailing remainder because it may itself
+// contain colons, so segments are consumed left to right by the rule's flags.
+func parseChannelAffinityKey(fullKey string, ruleByName map[string]operation_setting.ChannelAffinityRule) (ruleName, modelName, usingGroup, affinityValue string, ok bool) {
+	prefix := channelAffinityCacheNamespace + ":"
+	if !strings.HasPrefix(fullKey, prefix) {
+		return "", "", "", "", false
+	}
+	rest := strings.TrimPrefix(fullKey, prefix)
+
+	head, remainder, found := strings.Cut(rest, ":")
+	if !found {
+		return "", "", "", "", false
+	}
+	rule, exists := ruleByName[head]
+	if !exists {
+		return "", "", "", "", false
+	}
+	ruleName = head
+
+	if rule.IncludeModelName {
+		modelName, remainder, found = strings.Cut(remainder, ":")
+		if !found {
+			return "", "", "", "", false
+		}
+	}
+	if rule.IncludeUsingGroup {
+		usingGroup, remainder, found = strings.Cut(remainder, ":")
+		if !found {
+			return "", "", "", "", false
+		}
+	}
+	if remainder == "" {
+		return "", "", "", "", false
+	}
+	return ruleName, modelName, usingGroup, remainder, true
+}
+
+func (f ChannelAffinityEntryFilter) matches(view ChannelAffinityEntryView) bool {
+	if f.ChannelID > 0 && view.ChannelID != f.ChannelID {
+		return false
+	}
+	if f.UserID > 0 && view.UserID != f.UserID {
+		return false
+	}
+	if f.RuleName != "" && view.RuleName != f.RuleName {
+		return false
+	}
+	return true
+}
+
+// collectChannelAffinityEntries scans the whole namespace and returns every entry
+// matching the filter, paired with its fully namespaced key so callers can delete.
+func collectChannelAffinityEntries(filter ChannelAffinityEntryFilter) ([]string, []ChannelAffinityEntryView, error) {
+	cache := getChannelAffinityCache()
+	keys, err := cache.Keys()
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(keys) == 0 {
+		return nil, nil, nil
+	}
+
+	values, err := cache.GetMany(keys)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	ruleByName := affinityRulesByName()
+	matchedKeys := make([]string, 0, len(values))
+	views := make([]ChannelAffinityEntryView, 0, len(values))
+	for fullKey, entry := range values {
+		ruleName, modelName, usingGroup, affinityValue, ok := parseChannelAffinityKey(fullKey, ruleByName)
+		if !ok {
+			continue
+		}
+		view := ChannelAffinityEntryView{
+			RuleName:       ruleName,
+			ModelName:      modelName,
+			UsingGroup:     usingGroup,
+			KeyFingerprint: affinityFingerprint(affinityValue),
+			KeyHint:        buildChannelAffinityKeyHint(affinityValue),
+			ChannelID:      entry.ChannelID,
+			UserID:         entry.UserID,
+			TokenID:        entry.TokenID,
+			UpdatedAt:      entry.UpdatedAt,
+		}
+		if !filter.matches(view) {
+			continue
+		}
+		matchedKeys = append(matchedKeys, fullKey)
+		views = append(views, view)
+	}
+	return matchedKeys, views, nil
+}
+
+// ListChannelAffinityEntries answers both "how many bindings does this channel
+// hold" and "which channels is this user pinned to". Aggregates always cover the
+// full match set; only the entries slice is truncated by limit.
+func ListChannelAffinityEntries(filter ChannelAffinityEntryFilter, limit int) (ChannelAffinityEntryList, error) {
+	if limit <= 0 {
+		limit = channelAffinityEntriesDefaultLimit
+	}
+	if limit > channelAffinityEntriesMaxLimit {
+		limit = channelAffinityEntriesMaxLimit
+	}
+
+	out := ChannelAffinityEntryList{
+		ByChannelID: map[string]int{},
+		ByUserID:    map[string]int{},
+		Entries:     []ChannelAffinityEntryView{},
+	}
+
+	_, views, err := collectChannelAffinityEntries(filter)
+	if err != nil {
+		return out, err
+	}
+
+	for _, v := range views {
+		out.ByChannelID[strconv.Itoa(v.ChannelID)]++
+		out.ByUserID[strconv.Itoa(v.UserID)]++
+	}
+	out.Total = len(views)
+
+	sort.Slice(views, func(i, j int) bool {
+		if views[i].UpdatedAt != views[j].UpdatedAt {
+			return views[i].UpdatedAt > views[j].UpdatedAt
+		}
+		return views[i].KeyFingerprint < views[j].KeyFingerprint
+	})
+	if len(views) > limit {
+		views = views[:limit]
+	}
+	if views != nil {
+		out.Entries = views
+	}
+	out.Returned = len(out.Entries)
+	return out, nil
+}
+
+// ClearChannelAffinityCacheByFilter drops every binding matching the filter.
+// An empty filter is rejected by the caller so this never becomes an accidental
+// "clear everything" path; use ClearChannelAffinityCacheAll for that.
+func ClearChannelAffinityCacheByFilter(filter ChannelAffinityEntryFilter) (int, error) {
+	matchedKeys, _, err := collectChannelAffinityEntries(filter)
+	if err != nil {
+		return 0, err
+	}
+	if len(matchedKeys) == 0 {
+		return 0, nil
+	}
+
+	cache := getChannelAffinityCache()
+	res, err := cache.DeleteMany(matchedKeys)
+	if err != nil {
+		return 0, err
+	}
+	deleted := 0
+	for _, ok := range res {
+		if ok {
+			deleted++
+		}
+	}
+	return deleted, nil
 }
 
 func ClearChannelAffinityCacheAll() int {
@@ -610,13 +846,13 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup 
 		})
 
 		cache := getChannelAffinityCache()
-		channelID, found, err := cache.Get(cacheKeySuffix)
+		entry, found, err := cache.Get(cacheKeySuffix)
 		if err != nil {
 			common.SysError(fmt.Sprintf("channel affinity cache get failed: key=%s, err=%v", cacheKeyFull, err))
 			return 0, false
 		}
-		if found {
-			return channelID, true
+		if found && entry.ChannelID > 0 {
+			return entry.ChannelID, true
 		}
 		return 0, false
 	}
@@ -733,8 +969,14 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 	if ttlSeconds <= 0 {
 		ttlSeconds = 3600
 	}
+	entry := ChannelAffinityEntry{
+		ChannelID: channelID,
+		UserID:    common.GetContextKeyInt(c, constant.ContextKeyUserId),
+		TokenID:   common.GetContextKeyInt(c, constant.ContextKeyTokenId),
+		UpdatedAt: time.Now().Unix(),
+	}
 	cache := getChannelAffinityCache()
-	if err := cache.SetWithTTL(cacheKey, channelID, time.Duration(ttlSeconds)*time.Second); err != nil {
+	if err := cache.SetWithTTL(cacheKey, entry, time.Duration(ttlSeconds)*time.Second); err != nil {
 		common.SysError(fmt.Sprintf("channel affinity cache set failed: key=%s, err=%v", cacheKey, err))
 	}
 }
