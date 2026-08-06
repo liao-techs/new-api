@@ -208,7 +208,7 @@ func TestGetPreferredChannelByAffinity_RequestHeaderKeySource(t *testing.T) {
 	cacheKeySuffix := buildChannelAffinityCacheKeySuffix(rule, "gpt-5", "default", affinityValue)
 
 	cache := getChannelAffinityCache()
-	require.NoError(t, cache.SetWithTTL(cacheKeySuffix, 9528, time.Minute))
+	require.NoError(t, cache.SetWithTTL(cacheKeySuffix, ChannelAffinityEntry{ChannelID: 9528}, time.Minute))
 	t.Cleanup(func() {
 		_, _ = cache.DeleteMany([]string{cacheKeySuffix})
 	})
@@ -242,7 +242,7 @@ func TestClearCurrentChannelAffinityCache(t *testing.T) {
 	cacheKeySuffix := fmt.Sprintf("codex cli trace:default:clear-current-%d", time.Now().UnixNano())
 	cacheKeyFull := channelAffinityCacheNamespace + ":" + cacheKeySuffix
 	cache := getChannelAffinityCache()
-	require.NoError(t, cache.SetWithTTL(cacheKeySuffix, 9527, time.Minute))
+	require.NoError(t, cache.SetWithTTL(cacheKeySuffix, ChannelAffinityEntry{ChannelID: 9527}, time.Minute))
 	t.Cleanup(func() {
 		_, _ = cache.DeleteMany([]string{cacheKeySuffix})
 	})
@@ -283,7 +283,7 @@ func TestChannelAffinityHitCodexTemplatePassHeadersEffective(t *testing.T) {
 	cacheKeySuffix := buildChannelAffinityCacheKeySuffix(*codexRule, "gpt-5", "default", affinityValue)
 
 	cache := getChannelAffinityCache()
-	require.NoError(t, cache.SetWithTTL(cacheKeySuffix, 9527, time.Minute))
+	require.NoError(t, cache.SetWithTTL(cacheKeySuffix, ChannelAffinityEntry{ChannelID: 9527}, time.Minute))
 	t.Cleanup(func() {
 		_, _ = cache.DeleteMany([]string{cacheKeySuffix})
 	})
