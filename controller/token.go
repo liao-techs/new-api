@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -33,12 +35,48 @@ func (input *tokenAutoGroupsInput) UnmarshalJSON(data []byte) error {
 
 type tokenRequest struct {
 	model.Token
-	AutoGroups tokenAutoGroupsInput `json:"auto_groups"`
+	AutoGroups    tokenAutoGroupsInput `json:"auto_groups"`
+	MaxGroupRatio json.RawMessage      `json:"max_group_ratio"`
 }
 
 type tokenResponse struct {
 	*model.Token
 	AutoGroups []string `json:"auto_groups"`
+}
+
+func (r *tokenRequest) parseMaxGroupRatio() (*float64, bool, error) {
+	if len(r.MaxGroupRatio) == 0 {
+		return nil, false, nil
+	}
+	var value *float64
+	if err := common.Unmarshal(r.MaxGroupRatio, &value); err != nil {
+		return nil, true, err
+	}
+	return value, true, nil
+}
+
+func validateTokenMaxGroupRatio(maxGroupRatio *float64) error {
+	if maxGroupRatio == nil {
+		return nil
+	}
+	if math.IsNaN(*maxGroupRatio) || math.IsInf(*maxGroupRatio, 0) || *maxGroupRatio < 0 {
+		return fmt.Errorf("最高允许倍率必须是大于或等于 0 的有限数字")
+	}
+	return nil
+}
+
+func tokenMaxGroupRatioAuditValue(value *float64) interface{} {
+	if value == nil {
+		return "unlimited"
+	}
+	return *value
+}
+
+func tokenMaxGroupRatiosEqual(left, right *float64) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func buildMaskedTokenResponse(token *model.Token) *tokenResponse {
@@ -269,8 +307,20 @@ func AddToken(c *gin.Context) {
 		return
 	}
 	token := request.Token
+	maxGroupRatio, maxGroupRatioPresent, err := request.parseMaxGroupRatio()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if maxGroupRatioPresent {
+		token.MaxGroupRatio = maxGroupRatio
+	}
 	if len(token.Name) > 50 {
 		common.ApiErrorI18n(c, i18n.MsgTokenNameTooLong)
+		return
+	}
+	if err := validateTokenMaxGroupRatio(token.MaxGroupRatio); err != nil {
+		common.ApiError(c, err)
 		return
 	}
 	// 非无限额度时，检查额度值是否超出有效范围
@@ -328,12 +378,17 @@ func AddToken(c *gin.Context) {
 		Group:              token.Group,
 		CrossGroupRetry:    token.CrossGroupRetry,
 		AutoGroups:         token.AutoGroups,
+		MaxGroupRatio:      token.MaxGroupRatio,
 	}
 	err = cleanToken.Insert()
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	recordUserSecurityAudit(c, cleanToken.UserId, "token.max_group_ratio_create", map[string]interface{}{
+		"token_id":        cleanToken.Id,
+		"max_group_ratio": tokenMaxGroupRatioAuditValue(cleanToken.MaxGroupRatio),
+	})
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -364,8 +419,20 @@ func UpdateToken(c *gin.Context) {
 		return
 	}
 	token := request.Token
+	maxGroupRatio, maxGroupRatioPresent, err := request.parseMaxGroupRatio()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if maxGroupRatioPresent {
+		token.MaxGroupRatio = maxGroupRatio
+	}
 	if len(token.Name) > 50 {
 		common.ApiErrorI18n(c, i18n.MsgTokenNameTooLong)
+		return
+	}
+	if err := validateTokenMaxGroupRatio(token.MaxGroupRatio); err != nil {
+		common.ApiError(c, err)
 		return
 	}
 	if !token.UnlimitedQuota {
@@ -384,6 +451,7 @@ func UpdateToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	previousToken := *cleanToken
 	if token.Status == common.TokenStatusEnabled {
 		if cleanToken.Status == common.TokenStatusExpired && cleanToken.ExpiredTime <= common.GetTimestamp() && cleanToken.ExpiredTime != -1 {
 			common.ApiErrorI18n(c, i18n.MsgTokenExpiredCannotEnable)
@@ -415,11 +483,27 @@ func UpdateToken(c *gin.Context) {
 				return
 			}
 		}
+		if maxGroupRatioPresent {
+			cleanToken.MaxGroupRatio = token.MaxGroupRatio
+		}
 	}
-	err = cleanToken.Update()
+	if maxGroupRatioPresent && statusOnly == "" {
+		err = cleanToken.UpdateWithMaxGroupRatioSafety(previousToken)
+	} else {
+		err = cleanToken.Update()
+	}
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if maxGroupRatioPresent &&
+		statusOnly == "" &&
+		!tokenMaxGroupRatiosEqual(previousToken.MaxGroupRatio, cleanToken.MaxGroupRatio) {
+		recordUserSecurityAudit(c, userId, "token.max_group_ratio_update", map[string]interface{}{
+			"token_id":            cleanToken.Id,
+			"old_max_group_ratio": tokenMaxGroupRatioAuditValue(previousToken.MaxGroupRatio),
+			"new_max_group_ratio": tokenMaxGroupRatioAuditValue(cleanToken.MaxGroupRatio),
+		})
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

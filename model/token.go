@@ -29,6 +29,7 @@ type Token struct {
 	Group              string         `json:"group" gorm:"default:''"`
 	CrossGroupRetry    bool           `json:"cross_group_retry"` // 跨分组重试，仅auto分组有效
 	AutoGroups         string         `json:"-" gorm:"type:text"`
+	MaxGroupRatio      *float64       `json:"max_group_ratio"`
 	DeletedAt          gorm.DeletedAt `gorm:"index"`
 }
 
@@ -314,10 +315,15 @@ func (token *Token) Insert() error {
 	return err
 }
 
+func (token *Token) updateDatabase() error {
+	return DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
+		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry",
+		"auto_groups", "max_group_ratio").Updates(token).Error
+}
+
 // Update Make sure your token's fields is completed, because this will update non-zero values
 func (token *Token) Update() (err error) {
-	err = DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
-		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups").Updates(token).Error
+	err = token.updateDatabase()
 	if shouldUpdateRedis(true, err) {
 		if cacheErr := cacheSetToken(*token); cacheErr != nil {
 			common.SysLog("failed to update token cache: " + cacheErr.Error())
@@ -327,6 +333,49 @@ func (token *Token) Update() (err error) {
 		}
 	}
 	return err
+}
+
+func maxGroupRatioTightened(previous, next *float64) bool {
+	if next == nil {
+		return false
+	}
+	if previous == nil {
+		return true
+	}
+	return *next < *previous
+}
+
+// UpdateWithMaxGroupRatioSafety orders cache and database writes according to
+// the security direction of a max-ratio change. Tightening publishes a complete
+// old-token cache entry with the stricter limit before the database update;
+// loosening commits the database first so any stale cache remains stricter.
+func (token *Token) UpdateWithMaxGroupRatioSafety(previous Token) error {
+	tightening := maxGroupRatioTightened(previous.MaxGroupRatio, token.MaxGroupRatio)
+	if common.RedisEnabled && tightening {
+		strictCacheToken := previous
+		strictCacheToken.MaxGroupRatio = token.MaxGroupRatio
+		if err := cacheSetToken(strictCacheToken); err != nil {
+			return fmt.Errorf("failed to publish stricter token cache: %w", err)
+		}
+	}
+
+	if err := token.updateDatabase(); err != nil {
+		if common.RedisEnabled && tightening {
+			if restoreErr := cacheSetToken(previous); restoreErr != nil {
+				common.SysLog(fmt.Sprintf(
+					"failed to restore token cache after database update failure: %v",
+					restoreErr,
+				))
+			}
+		}
+		return err
+	}
+	if common.RedisEnabled {
+		if err := cacheSetToken(*token); err != nil {
+			return fmt.Errorf("failed to update token cache: %w", err)
+		}
+	}
+	return nil
 }
 
 func (token *Token) SelectUpdate() (err error) {

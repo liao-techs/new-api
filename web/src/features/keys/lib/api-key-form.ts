@@ -44,6 +44,8 @@ export function getApiKeyFormSchema(t: TFunction, maxAutoGroups = 5) {
       auto_groups_mode: z.enum(['inherit', 'custom']),
       auto_groups: z.array(z.string()),
       cross_group_retry: z.boolean().optional(),
+      max_group_ratio_enabled: z.boolean(),
+      max_group_ratio: z.number().optional(),
       tokenCount: z.number().min(1).optional(),
     })
     .superRefine((data, ctx) => {
@@ -80,18 +82,27 @@ export function getApiKeyFormSchema(t: TFunction, maxAutoGroups = 5) {
         }
       }
 
-      if (data.unlimited_quota) {
-        return
-      }
-
       if (
-        data.remain_quota_dollars === undefined ||
-        data.remain_quota_dollars < 0
+        !data.unlimited_quota &&
+        (data.remain_quota_dollars === undefined ||
+          data.remain_quota_dollars < 0)
       ) {
         ctx.addIssue({
           code: 'custom',
           path: ['remain_quota_dollars'],
           message: t('Quota must be zero or greater'),
+        })
+      }
+      if (
+        data.max_group_ratio_enabled &&
+        (data.max_group_ratio === undefined ||
+          !Number.isFinite(data.max_group_ratio) ||
+          data.max_group_ratio < 0)
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['max_group_ratio'],
+          message: t('Maximum allowed ratio must be zero or greater'),
         })
       }
     })
@@ -114,18 +125,92 @@ export const API_KEY_FORM_DEFAULT_VALUES: ApiKeyFormValues = {
   auto_groups_mode: 'inherit',
   auto_groups: [],
   cross_group_retry: true,
+  max_group_ratio_enabled: false,
+  max_group_ratio: undefined,
   tokenCount: 1,
 }
 
+export type GroupRatioOption = {
+  value: string
+  ratio?: number | string
+  maxRatio?: number
+}
+
+function parseGroupRatio(ratio: number | string | undefined) {
+  if (typeof ratio === 'number' && Number.isFinite(ratio)) return ratio
+  if (typeof ratio !== 'string' || ratio.trim() === '') return undefined
+  const parsed = Number(ratio)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+export function getDefaultMaxGroupRatio(
+  group: string,
+  groups: GroupRatioOption[],
+  inheritedGroup: string = DEFAULT_GROUP
+) {
+  const effectiveGroup = group || inheritedGroup
+  if (effectiveGroup === 'auto') {
+    const configuredAutoMax = groups.find(
+      (item) => item.value === 'auto'
+    )?.maxRatio
+    if (configuredAutoMax !== undefined && Number.isFinite(configuredAutoMax)) {
+      return configuredAutoMax
+    }
+  }
+  if (effectiveGroup !== 'auto') {
+    return parseGroupRatio(
+      groups.find((item) => item.value === effectiveGroup)?.ratio
+    )
+  }
+  const ratios = groups
+    .filter((item) => item.value !== 'auto')
+    .map((item) => parseGroupRatio(item.ratio))
+    .filter((ratio): ratio is number => ratio !== undefined)
+  return ratios.length > 0 ? Math.max(...ratios) : undefined
+}
+
+export type ApiKeyRatioProtectionState = {
+  currentRatio?: number
+  protected: boolean
+  exceeded: boolean
+}
+
+export function getApiKeyRatioProtectionState(
+  apiKey: Pick<ApiKey, 'group' | 'max_group_ratio'>,
+  groups: GroupRatioOption[],
+  inheritedGroup: string = DEFAULT_GROUP
+): ApiKeyRatioProtectionState {
+  const currentRatio = getDefaultMaxGroupRatio(
+    apiKey.group || '',
+    groups,
+    inheritedGroup
+  )
+  const maxGroupRatio = apiKey.max_group_ratio
+  const isProtected = maxGroupRatio !== null && maxGroupRatio !== undefined
+
+  return {
+    currentRatio,
+    protected: isProtected,
+    exceeded:
+      isProtected && currentRatio !== undefined && currentRatio > maxGroupRatio,
+  }
+}
+
 export function getApiKeyFormDefaultValues(
-  defaultUseAutoGroup: boolean
+  defaultUseAutoGroup: boolean,
+  groups: GroupRatioOption[] = [],
+  inheritedGroup: string = DEFAULT_GROUP
 ): ApiKeyFormValues {
+  const group = defaultUseAutoGroup ? 'auto' : DEFAULT_GROUP
+  const maxGroupRatio = getDefaultMaxGroupRatio(group, groups, inheritedGroup)
   return {
     ...API_KEY_FORM_DEFAULT_VALUES,
-    group: defaultUseAutoGroup ? 'auto' : DEFAULT_GROUP,
+    group,
     auto_groups_mode: 'inherit',
     auto_groups: [],
     cross_group_retry: defaultUseAutoGroup,
+    max_group_ratio_enabled: maxGroupRatio !== undefined,
+    max_group_ratio: maxGroupRatio,
   }
 }
 
@@ -157,6 +242,9 @@ export function transformFormDataToPayload(
         ? data.auto_groups
         : [],
     cross_group_retry: data.group === 'auto' ? !!data.cross_group_retry : false,
+    max_group_ratio: data.max_group_ratio_enabled
+      ? (data.max_group_ratio ?? null)
+      : null,
   }
 }
 
@@ -193,6 +281,8 @@ export function transformApiKeyToFormDefaults(
     auto_groups_mode: autoGroupsMode,
     auto_groups: autoGroups,
     cross_group_retry: !!apiKey.cross_group_retry,
+    max_group_ratio_enabled: apiKey.max_group_ratio !== null,
+    max_group_ratio: apiKey.max_group_ratio ?? undefined,
     tokenCount: 1,
   }
 }

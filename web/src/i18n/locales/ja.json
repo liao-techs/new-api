@@ -5248,6 +5248,23 @@
     "Zero retention": "データ保持なし",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V 4",
+    "Maximum allowed ratio": "許容する最大倍率",
+    "Auto group will only use groups at or below this ratio.": "自動グループは、この倍率以下のグループのみを使用します。",
+    "Reject requests before billing when the effective group ratio exceeds this value.": "実際のグループ倍率がこの値を超える場合、課金前にリクエストを拒否します。",
+    "Ratio limit": "倍率上限",
+    "Enter the highest allowed ratio": "許容する最大倍率を入力",
+    "The request is allowed when the effective ratio equals this limit.": "実際の倍率がこの上限と等しい場合、リクエストは許可されます。",
+    "Maximum allowed ratio must be zero or greater": "許容する最大倍率は 0 以上である必要があります",
+    "Pricing or API key data is not ready. Please retry.": "料金または API キーのデータを準備できませんでした。再試行してください。",
+    "Group pricing could not be loaded. Saving is disabled.": "グループ料金を読み込めないため、保存は無効です。",
+    "API key details could not be loaded. Editing is disabled.": "API キーの詳細を読み込めないため、編集は無効です。",
+    "Auto selects only groups at or below this cap. If none qualify, the request is rejected before billing.": "自動選択ではこの上限以下のグループのみを使用します。該当するグループがない場合、課金前にリクエストを拒否します。",
+    "This limit is below the current effective ratio ({{ratio}}). Requests using this key will be blocked.": "この上限は現在の実効倍率（{{ratio}}）を下回っています。このキーのリクエストはブロックされます。",
+    "Price protection": "料金保護",
+    "Unprotected": "未保護",
+    "Blocked by price cap": "料金上限によりブロック",
+    "Protected": "保護済み",
+    "Current ratio: {{current}} · Maximum allowed: {{maximum}}": "現在の倍率：{{current}} · 最大許容値：{{maximum}}",
     "Zoom": "ズーム"
   }
 }

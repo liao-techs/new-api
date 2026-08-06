@@ -101,6 +101,17 @@ func Distribute() func(c *gin.Context) {
 						common.SetContextKey(c, constant.ContextKeyUsingGroup, usingGroup)
 					}
 				}
+				if usingGroup != "auto" {
+					userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+					actualRatio, _, _ := service.GetRequestGroupRatio(c, userGroup, usingGroup)
+					if err := service.CheckTokenGroupRatioLimit(c, usingGroup, actualRatio); err != nil {
+						var limitErr *service.TokenGroupRatioLimitError
+						if errors.As(err, &limitErr) {
+							abortWithTokenGroupRatioLimit(c, limitErr)
+							return
+						}
+					}
+				}
 
 				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
 					affinityUsable := false
@@ -110,6 +121,7 @@ func Distribute() func(c *gin.Context) {
 						if usingGroup == "auto" {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 							autoGroups := service.GetRequestAutoGroups(c, userGroup)
+							autoGroups, _ = service.FilterAutoGroupsByTokenRatioLimit(c, userGroup, autoGroups)
 							for _, g := range autoGroups {
 								if model.IsChannelEnabledForGroupModel(g, modelRequest.Model, preferred.Id) {
 									selectGroup = g
@@ -141,6 +153,11 @@ func Distribute() func(c *gin.Context) {
 						Retry:       common.GetPointer(0),
 					})
 					if err != nil {
+						var limitErr *service.TokenGroupRatioLimitError
+						if errors.As(err, &limitErr) {
+							abortWithTokenGroupRatioLimit(c, limitErr)
+							return
+						}
 						showGroup := usingGroup
 						if usingGroup == "auto" {
 							showGroup = fmt.Sprintf("auto(%s)", selectGroup)

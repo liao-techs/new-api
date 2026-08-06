@@ -218,6 +218,12 @@ func RedisHGetObj(key string, obj interface{}) error {
 					return fmt.Errorf("failed to parse bool field %s: %w", fieldName, err)
 				}
 				fieldValue.SetBool(boolValue)
+			case reflect.Float32, reflect.Float64:
+				floatValue, err := strconv.ParseFloat(value, fieldValue.Type().Bits())
+				if err != nil {
+					return fmt.Errorf("failed to parse float field %s: %w", fieldName, err)
+				}
+				fieldValue.SetFloat(floatValue)
 			case reflect.Struct:
 				// Special handling for gorm.DeletedAt
 				if fieldValue.Type().String() == "gorm.DeletedAt" {

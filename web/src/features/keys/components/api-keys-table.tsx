@@ -20,7 +20,7 @@ import { useQuery } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 import type { Table as TanstackTable } from '@tanstack/react-table'
 import { Database } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -42,8 +42,10 @@ import {
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useTableUrlState } from '@/hooks/use-table-url-state'
+import { getUserGroups } from '@/lib/api'
 import { formatQuota } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { getApiKeys, searchApiKeys } from '../api'
 import {
@@ -52,6 +54,7 @@ import {
   API_KEY_STATUSES,
   ERROR_MESSAGES,
 } from '../constants'
+import { getApiKeyRatioProtectionState, type GroupRatioOption } from '../lib'
 import type { ApiKey } from '../types'
 import { ApiKeyCell, UnlimitedQuotaBadge } from './api-keys-cells'
 import { useApiKeysColumns } from './api-keys-columns'
@@ -96,9 +99,13 @@ function ApiKeysMobileSkeleton() {
 function ApiKeysMobileList({
   table,
   isLoading,
+  groups,
+  inheritedGroup,
 }: {
   table: TanstackTable<ApiKey>
   isLoading: boolean
+  groups: GroupRatioOption[]
+  inheritedGroup: string
 }) {
   const { t } = useTranslation()
   const rows = table.getRowModel().rows
@@ -131,6 +138,20 @@ function ApiKeysMobileList({
         const apiKey = row.original
         const statusConfig = API_KEY_STATUSES[apiKey.status]
         const total = apiKey.used_quota + apiKey.remain_quota
+        const protection = getApiKeyRatioProtectionState(
+          apiKey,
+          groups,
+          inheritedGroup
+        )
+        let protectionLabel = t('Protected')
+        let protectionVariant: 'warning' | 'danger' | 'success' = 'success'
+        if (!protection.protected) {
+          protectionLabel = t('Unprotected')
+          protectionVariant = 'warning'
+        } else if (protection.exceeded) {
+          protectionLabel = t('Blocked by price cap')
+          protectionVariant = 'danger'
+        }
 
         return (
           <div
@@ -179,6 +200,16 @@ function ApiKeysMobileList({
                 </span>
               )}
             </div>
+            <div className='flex items-center justify-between gap-2 text-xs'>
+              <span className='text-muted-foreground'>
+                {t('Price protection')}
+              </span>
+              <StatusBadge
+                label={protectionLabel}
+                variant={protectionVariant}
+                copyable={false}
+              />
+            </div>
           </div>
         )
       })}
@@ -190,7 +221,24 @@ export function ApiKeysTable() {
   const { t } = useTranslation()
   const { refreshTrigger } = useApiKeys()
   const [now, setNow] = useState(() => Date.now())
-  const columns = useApiKeysColumns(now)
+  const inheritedGroup = useAuthStore(
+    (state) => state.auth.user?.group || 'default'
+  )
+  const { data: groupsData } = useQuery({
+    queryKey: ['user-groups'],
+    queryFn: getUserGroups,
+    staleTime: 0,
+  })
+  const groups = useMemo<GroupRatioOption[]>(
+    () =>
+      Object.entries(groupsData?.data || {}).map(([value, info]) => ({
+        value,
+        ratio: info.ratio,
+        maxRatio: info.max_ratio,
+      })),
+    [groupsData?.data]
+  )
+  const columns = useApiKeysColumns(now, groups, inheritedGroup)
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -325,7 +373,14 @@ export function ApiKeysTable() {
           },
         ],
       }}
-      mobile={<ApiKeysMobileList table={table} isLoading={isLoading} />}
+      mobile={
+        <ApiKeysMobileList
+          table={table}
+          isLoading={isLoading}
+          groups={groups}
+          inheritedGroup={inheritedGroup}
+        />
+      }
       getRowClassName={(row) =>
         isDisabledApiKeyRow(row.original) ? DISABLED_ROW_DESKTOP : undefined
       }
