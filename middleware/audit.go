@@ -174,6 +174,9 @@ func finishAdminAudit(c *gin.Context, writer *auditResponseWriter) {
 	if len(routeParams) > 0 {
 		auditInfo["params"] = routeParams
 	}
+	if detail, ok := common.GetContextKeyType[map[string]interface{}](c, constant.ContextKeyAuditDetail); ok && len(detail) > 0 {
+		auditInfo["detail"] = detail
+	}
 
 	gopool.Go(func() {
 		model.RecordOperationAuditLog(operatorId, content, ip, action, opParams, adminInfo, auditInfo)
