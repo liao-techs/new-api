@@ -5248,6 +5248,23 @@
     "Zero retention": "Không lưu dữ liệu",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
+    "Maximum allowed ratio": "Hệ số tối đa cho phép",
+    "Auto group will only use groups at or below this ratio.": "Nhóm tự động chỉ sử dụng các nhóm có hệ số không vượt quá giá trị này.",
+    "Reject requests before billing when the effective group ratio exceeds this value.": "Từ chối yêu cầu trước khi tính phí nếu hệ số nhóm thực tế vượt quá giá trị này.",
+    "Ratio limit": "Giới hạn hệ số",
+    "Enter the highest allowed ratio": "Nhập hệ số tối đa cho phép",
+    "The request is allowed when the effective ratio equals this limit.": "Yêu cầu được cho phép khi hệ số thực tế bằng giới hạn này.",
+    "Maximum allowed ratio must be zero or greater": "Hệ số tối đa cho phép phải lớn hơn hoặc bằng 0",
+    "Pricing or API key data is not ready. Please retry.": "Dữ liệu giá hoặc khóa API chưa sẵn sàng. Vui lòng thử lại.",
+    "Group pricing could not be loaded. Saving is disabled.": "Không thể tải giá nhóm. Chức năng lưu đã bị tắt.",
+    "API key details could not be loaded. Editing is disabled.": "Không thể tải chi tiết khóa API. Chức năng chỉnh sửa đã bị tắt.",
+    "Auto selects only groups at or below this cap. If none qualify, the request is rejected before billing.": "Tự động chỉ chọn các nhóm không vượt quá giới hạn này. Nếu không có nhóm phù hợp, yêu cầu sẽ bị từ chối trước khi tính phí.",
+    "This limit is below the current effective ratio ({{ratio}}). Requests using this key will be blocked.": "Giới hạn này thấp hơn hệ số hiện tại ({{ratio}}). Các yêu cầu dùng khóa này sẽ bị chặn.",
+    "Price protection": "Bảo vệ giá",
+    "Unprotected": "Chưa bảo vệ",
+    "Blocked by price cap": "Bị chặn bởi giới hạn giá",
+    "Protected": "Đã bảo vệ",
+    "Current ratio: {{current}} · Maximum allowed: {{maximum}}": "Hệ số hiện tại: {{current}} · Tối đa cho phép: {{maximum}}",
     "Zoom": "Zoom"
   }
 }

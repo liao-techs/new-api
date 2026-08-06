@@ -5248,6 +5248,23 @@
     "Zero retention": "Zero retention",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
+    "Maximum allowed ratio": "Maximum allowed ratio",
+    "Auto group will only use groups at or below this ratio.": "Auto group will only use groups at or below this ratio.",
+    "Reject requests before billing when the effective group ratio exceeds this value.": "Reject requests before billing when the effective group ratio exceeds this value.",
+    "Ratio limit": "Ratio limit",
+    "Enter the highest allowed ratio": "Enter the highest allowed ratio",
+    "The request is allowed when the effective ratio equals this limit.": "The request is allowed when the effective ratio equals this limit.",
+    "Maximum allowed ratio must be zero or greater": "Maximum allowed ratio must be zero or greater",
+    "Pricing or API key data is not ready. Please retry.": "Pricing or API key data is not ready. Please retry.",
+    "Group pricing could not be loaded. Saving is disabled.": "Group pricing could not be loaded. Saving is disabled.",
+    "API key details could not be loaded. Editing is disabled.": "API key details could not be loaded. Editing is disabled.",
+    "Auto selects only groups at or below this cap. If none qualify, the request is rejected before billing.": "Auto selects only groups at or below this cap. If none qualify, the request is rejected before billing.",
+    "This limit is below the current effective ratio ({{ratio}}). Requests using this key will be blocked.": "This limit is below the current effective ratio ({{ratio}}). Requests using this key will be blocked.",
+    "Price protection": "Price protection",
+    "Unprotected": "Unprotected",
+    "Blocked by price cap": "Blocked by price cap",
+    "Protected": "Protected",
+    "Current ratio: {{current}} · Maximum allowed: {{maximum}}": "Current ratio: {{current}} · Maximum allowed: {{maximum}}",
     "Zoom": "Zoom"
   }
 }

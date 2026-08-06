@@ -5248,6 +5248,23 @@
     "Zero retention": "Без хранения данных",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
+    "Maximum allowed ratio": "Максимально допустимый множитель",
+    "Auto group will only use groups at or below this ratio.": "Автогруппа будет использовать только группы с множителем не выше этого значения.",
+    "Reject requests before billing when the effective group ratio exceeds this value.": "Отклонять запросы до списания средств, если действующий множитель группы превышает это значение.",
+    "Ratio limit": "Ограничение множителя",
+    "Enter the highest allowed ratio": "Введите максимально допустимый множитель",
+    "The request is allowed when the effective ratio equals this limit.": "Запрос разрешён, если действующий множитель равен этому ограничению.",
+    "Maximum allowed ratio must be zero or greater": "Максимально допустимый множитель должен быть не меньше нуля",
+    "Pricing or API key data is not ready. Please retry.": "Данные о цене или API-ключе не готовы. Повторите попытку.",
+    "Group pricing could not be loaded. Saving is disabled.": "Не удалось загрузить цены групп. Сохранение отключено.",
+    "API key details could not be loaded. Editing is disabled.": "Не удалось загрузить данные API-ключа. Редактирование отключено.",
+    "Auto selects only groups at or below this cap. If none qualify, the request is rejected before billing.": "Автовыбор использует только группы не выше этого лимита. Если подходящих групп нет, запрос отклоняется до списания.",
+    "This limit is below the current effective ratio ({{ratio}}). Requests using this key will be blocked.": "Этот лимит ниже текущего множителя ({{ratio}}). Запросы с этим ключом будут заблокированы.",
+    "Price protection": "Защита цены",
+    "Unprotected": "Без защиты",
+    "Blocked by price cap": "Заблокирован лимитом цены",
+    "Protected": "Защищён",
+    "Current ratio: {{current}} · Maximum allowed: {{maximum}}": "Текущий множитель: {{current}} · Максимум: {{maximum}}",
     "Zoom": "Zoom"
   }
 }

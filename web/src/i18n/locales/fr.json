@@ -5248,6 +5248,23 @@
     "Zero retention": "Aucune rétention",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
+    "Maximum allowed ratio": "Multiplicateur maximal autorisé",
+    "Auto group will only use groups at or below this ratio.": "Le groupe automatique utilisera uniquement les groupes dont le multiplicateur est inférieur ou égal à cette valeur.",
+    "Reject requests before billing when the effective group ratio exceeds this value.": "Rejeter les requêtes avant facturation lorsque le multiplicateur effectif du groupe dépasse cette valeur.",
+    "Ratio limit": "Limite du multiplicateur",
+    "Enter the highest allowed ratio": "Saisissez le multiplicateur maximal autorisé",
+    "The request is allowed when the effective ratio equals this limit.": "La requête est autorisée lorsque le multiplicateur effectif est égal à cette limite.",
+    "Maximum allowed ratio must be zero or greater": "Le multiplicateur maximal autorisé doit être supérieur ou égal à zéro",
+    "Pricing or API key data is not ready. Please retry.": "Les données de tarification ou de clé API ne sont pas prêtes. Veuillez réessayer.",
+    "Group pricing could not be loaded. Saving is disabled.": "La tarification des groupes n'a pas pu être chargée. L'enregistrement est désactivé.",
+    "API key details could not be loaded. Editing is disabled.": "Les détails de la clé API n'ont pas pu être chargés. La modification est désactivée.",
+    "Auto selects only groups at or below this cap. If none qualify, the request is rejected before billing.": "La sélection automatique utilise uniquement les groupes sous cette limite. Si aucun ne convient, la requête est rejetée avant facturation.",
+    "This limit is below the current effective ratio ({{ratio}}). Requests using this key will be blocked.": "Cette limite est inférieure au multiplicateur effectif actuel ({{ratio}}). Les requêtes utilisant cette clé seront bloquées.",
+    "Price protection": "Protection tarifaire",
+    "Unprotected": "Non protégée",
+    "Blocked by price cap": "Bloquée par le plafond",
+    "Protected": "Protégée",
+    "Current ratio: {{current}} · Maximum allowed: {{maximum}}": "Multiplicateur actuel : {{current}} · Maximum autorisé : {{maximum}}",
     "Zoom": "Zoom"
   }
 }

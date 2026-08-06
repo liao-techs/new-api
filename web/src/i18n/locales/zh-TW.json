@@ -5248,6 +5248,23 @@
     "Zero retention": "零數據保留",
     "Zhipu": "智譜",
     "Zhipu V4": "智譜 V4",
+    "Maximum allowed ratio": "最高允許倍率",
+    "Auto group will only use groups at or below this ratio.": "自動分組只會使用倍率不高於此值的分組。",
+    "Reject requests before billing when the effective group ratio exceeds this value.": "當實際生效的分組倍率超過此值時，將在扣費前拒絕請求。",
+    "Ratio limit": "倍率上限",
+    "Enter the highest allowed ratio": "請輸入最高允許倍率",
+    "The request is allowed when the effective ratio equals this limit.": "實際生效倍率等於此上限時允許請求。",
+    "Maximum allowed ratio must be zero or greater": "最高允許倍率必須大於或等於 0",
+    "Pricing or API key data is not ready. Please retry.": "價格或 API Key 資料尚未就緒，請重試。",
+    "Group pricing could not be loaded. Saving is disabled.": "無法載入分組價格，已停用儲存。",
+    "API key details could not be loaded. Editing is disabled.": "無法載入 API Key 詳情，已停用編輯。",
+    "Auto selects only groups at or below this cap. If none qualify, the request is rejected before billing.": "自動分組只會選擇不高於此上限的分組；若無符合條件的分組，請求會在扣費前被拒絕。",
+    "This limit is below the current effective ratio ({{ratio}}). Requests using this key will be blocked.": "此上限低於目前生效倍率（{{ratio}}），使用此 Key 的請求將被阻止。",
+    "Price protection": "價格保護",
+    "Unprotected": "未保護",
+    "Blocked by price cap": "已被價格上限阻止",
+    "Protected": "已保護",
+    "Current ratio: {{current}} · Maximum allowed: {{maximum}}": "目前倍率：{{current}} · 最高允許：{{maximum}}",
     "Zoom": "縮放"
   }
 }

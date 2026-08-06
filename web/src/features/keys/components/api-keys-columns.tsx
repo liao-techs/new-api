@@ -16,7 +16,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { useTranslation } from 'react-i18next'
 
@@ -30,12 +29,12 @@ import {
 } from '@/components/ui/tooltip'
 import { useMediaQuery } from '@/hooks'
 import { toIntlLocale } from '@/i18n/languages'
-import { getUserGroups } from '@/lib/api'
 import dayjs from '@/lib/dayjs'
 import { formatQuota } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 import { API_KEY_STATUSES } from '../constants'
+import { getApiKeyRatioProtectionState, type GroupRatioOption } from '../lib'
 import type { ApiKey } from '../types'
 import { ApiKeyGroupCell } from './api-key-group-cell'
 import { ApiKeyTimestampCell } from './api-key-timestamp-cell'
@@ -53,29 +52,20 @@ function getQuotaProgressColor(percentage: number): string {
   return '[&_[data-slot=progress-indicator]]:bg-emerald-500'
 }
 
-function useGroupRatios(): Record<string, number | string> {
-  const { data } = useQuery({
-    queryKey: ['user-groups'],
-    queryFn: getUserGroups,
-    staleTime: 0,
-    select: (res) => {
-      if (!res.success || !res.data) return {}
-      const ratios: Record<string, number | string> = {}
-      for (const [group, info] of Object.entries(res.data)) {
-        if (typeof info.ratio === 'number' || typeof info.ratio === 'string') {
-          ratios[group] = info.ratio
-        }
-      }
-      return ratios
-    },
-  })
-
-  return data ?? {}
-}
-
-export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
+export function useApiKeysColumns(
+  now: number,
+  groups: GroupRatioOption[],
+  inheritedGroup: string
+): ColumnDef<ApiKey>[] {
   const { t, i18n } = useTranslation()
-  const groupRatios = useGroupRatios()
+  const groupRatios = Object.fromEntries(
+    groups
+      .filter(
+        (group) =>
+          typeof group.ratio === 'number' || typeof group.ratio === 'string'
+      )
+      .map((group) => [group.value, group.ratio as number | string])
+  )
   const shouldReduceMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const justNowLabel = t('Just now')
@@ -206,6 +196,55 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
         )
       },
       size: 220,
+      meta: { mobileHidden: true },
+    },
+    {
+      id: 'ratio_protection',
+      header: t('Price protection'),
+      cell: ({ row }) => {
+        const apiKey = row.original
+        const protection = getApiKeyRatioProtectionState(
+          apiKey,
+          groups,
+          inheritedGroup
+        )
+        if (!protection.protected) {
+          return (
+            <StatusBadge
+              label={t('Unprotected')}
+              variant='warning'
+              copyable={false}
+              className='-ml-1.5'
+            />
+          )
+        }
+        return (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <StatusBadge
+                  label={
+                    protection.exceeded
+                      ? t('Blocked by price cap')
+                      : t('Protected')
+                  }
+                  variant={protection.exceeded ? 'danger' : 'success'}
+                  copyable={false}
+                  className='-ml-1.5'
+                />
+              }
+            />
+            <TooltipContent>
+              {t('Current ratio: {{current}} · Maximum allowed: {{maximum}}', {
+                current: protection.currentRatio ?? t('Unknown'),
+                maximum: apiKey.max_group_ratio,
+              })}
+            </TooltipContent>
+          </Tooltip>
+        )
+      },
+      enableSorting: false,
+      size: 170,
       meta: { mobileHidden: true },
     },
     {

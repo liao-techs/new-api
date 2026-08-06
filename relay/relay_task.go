@@ -181,6 +181,10 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	info.OriginModelName = modelName
 	priceData, err := helper.ModelPriceHelperPerCall(c, info)
 	if err != nil {
+		var limitErr *service.TokenGroupRatioLimitError
+		if errors.As(err, &limitErr) {
+			service.RecordTokenGroupRatioLimitAudit(c, limitErr)
+		}
 		return nil, service.TaskErrorWrapper(err, "model_price_error", http.StatusBadRequest)
 	}
 	info.PriceData = priceData

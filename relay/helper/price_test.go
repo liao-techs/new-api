@@ -1,20 +1,53 @@
 package helper
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestModelPriceHelperPerCallRejectsFinalGroupRatioAboveTokenLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	savedGroupRatios := ratio_setting.GroupRatio2JSONString()
+	savedModelPrices := ratio_setting.ModelPrice2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(savedGroupRatios))
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(savedModelPrices))
+	})
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"premium":0.15}`))
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"task-price-guard-model":1}`))
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(ctx, constant.ContextKeyTokenMaxGroupRatio, 0.12)
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "task-price-guard-model",
+		UserGroup:       "member",
+		UsingGroup:      "premium",
+	}
+
+	_, err := ModelPriceHelperPerCall(ctx, info)
+
+	var limitErr *service.TokenGroupRatioLimitError
+	if !errors.As(err, &limitErr) {
+		t.Fatalf("expected final per-call price to fail with TokenGroupRatioLimitError, got %v", err)
+	}
+	if limitErr.Current != 0.15 || limitErr.Max != 0.12 {
+		t.Fatalf("unexpected price limit error: %#v", limitErr)
+	}
+}
 
 func TestModelPriceHelperTieredUsesPreloadedRequestInput(t *testing.T) {
 	gin.SetMode(gin.TestMode)

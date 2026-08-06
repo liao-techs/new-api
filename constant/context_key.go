@@ -11,15 +11,18 @@ const (
 	ContextKeyRequestStartTime ContextKey = "request_start_time"
 
 	/* token related keys */
-	ContextKeyTokenUnlimited         ContextKey = "token_unlimited_quota"
-	ContextKeyTokenKey               ContextKey = "token_key"
-	ContextKeyTokenId                ContextKey = "token_id"
-	ContextKeyTokenGroup             ContextKey = "token_group"
-	ContextKeyTokenSpecificChannelId ContextKey = "specific_channel_id"
-	ContextKeyTokenModelLimitEnabled ContextKey = "token_model_limit_enabled"
-	ContextKeyTokenModelLimit        ContextKey = "token_model_limit"
-	ContextKeyTokenCrossGroupRetry   ContextKey = "token_cross_group_retry"
-	ContextKeyTokenAutoGroups        ContextKey = "token_auto_groups"
+	ContextKeyTokenUnlimited          ContextKey = "token_unlimited_quota"
+	ContextKeyTokenKey                ContextKey = "token_key"
+	ContextKeyTokenId                 ContextKey = "token_id"
+	ContextKeyTokenGroup              ContextKey = "token_group"
+	ContextKeyTokenSpecificChannelId  ContextKey = "specific_channel_id"
+	ContextKeyTokenModelLimitEnabled  ContextKey = "token_model_limit_enabled"
+	ContextKeyTokenModelLimit         ContextKey = "token_model_limit"
+	ContextKeyTokenCrossGroupRetry    ContextKey = "token_cross_group_retry"
+	ContextKeyTokenAutoGroups         ContextKey = "token_auto_groups"
+	ContextKeyTokenMaxGroupRatio      ContextKey = "token_max_group_ratio"
+	ContextKeyTokenGroupRatioSnapshot ContextKey = "token_group_ratio_snapshot"
+	ContextKeyTokenRatioAuditLogged   ContextKey = "token_group_ratio_audit_logged"
 
 	/* channel related keys */
 	ContextKeyChannelId                ContextKey = "channel_id"
