@@ -40,6 +40,20 @@ type testResult struct {
 	context     *gin.Context
 	localErr    error
 	newAPIError *types.NewAPIError
+	ttftMS      int64
+}
+
+const contextKeyChannelTestRequest = "channel_test_request"
+
+func channelTestTTFT(info *relaycommon.RelayInfo, isStream bool) int64 {
+	if !isStream || info == nil || info.StartTime.IsZero() || info.FirstResponseTime.IsZero() {
+		return 0
+	}
+	ttft := info.FirstResponseTime.Sub(info.StartTime).Milliseconds()
+	if ttft <= 0 {
+		return 0
+	}
+	return ttft
 }
 
 func normalizeChannelTestEndpoint(channel *model.Channel, modelName, endpointType string) string {
@@ -95,6 +109,7 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	}
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
+	c.Set(contextKeyChannelTestRequest, true)
 
 	testModel = strings.TrimSpace(testModel)
 	if testModel == "" {
@@ -524,6 +539,7 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 		context:     c,
 		localErr:    nil,
 		newAPIError: nil,
+		ttftMS:      channelTestTTFT(info, isStream),
 	}
 }
 
@@ -886,11 +902,16 @@ func TestChannel(c *gin.Context) {
 		requestCtx = c.Request.Context()
 	}
 	result := testChannel(requestCtx, channel, testUserID, testModel, endpointType, isStream)
+	var ttftMS any
+	if result.ttftMS > 0 {
+		ttftMS = result.ttftMS
+	}
 	if result.localErr != nil {
 		resp := gin.H{
 			"success": false,
 			"message": result.localErr.Error(),
 			"time":    0.0,
+			"ttft_ms": ttftMS,
 		}
 		if result.newAPIError != nil {
 			resp["error_code"] = result.newAPIError.GetErrorCode()
@@ -907,6 +928,7 @@ func TestChannel(c *gin.Context) {
 			"success":    false,
 			"message":    result.newAPIError.Error(),
 			"time":       consumedTime,
+			"ttft_ms":    ttftMS,
 			"error_code": result.newAPIError.GetErrorCode(),
 		})
 		return
@@ -915,6 +937,7 @@ func TestChannel(c *gin.Context) {
 		"success": true,
 		"message": "",
 		"time":    consumedTime,
+		"ttft_ms": ttftMS,
 	})
 }
 

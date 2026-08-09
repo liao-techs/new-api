@@ -445,6 +445,7 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		other["channel_type"] = c.GetInt("channel_type")
 		adminInfo := make(map[string]interface{})
 		adminInfo["use_channel"] = c.GetStringSlice("use_channel")
+		appendChannelTestAdminInfo(c, adminInfo)
 		isMultiKey := common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey)
 		if isMultiKey {
 			adminInfo["is_multi_key"] = true
@@ -460,6 +461,12 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		model.RecordErrorLog(c, userId, channelId, modelName, tokenName, err.MaskSensitiveErrorWithStatusCode(), tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
 	}
 
+}
+
+func appendChannelTestAdminInfo(c *gin.Context, adminInfo map[string]interface{}) {
+	if c != nil && c.GetBool(contextKeyChannelTestRequest) {
+		adminInfo["is_channel_test"] = true
+	}
 }
 
 func RelayMidjourney(c *gin.Context) {
