@@ -29,25 +29,25 @@ import {
 } from '../api-key-form'
 
 const groups = [
-  { value: 'default', ratio: 0.1 },
+  { value: 'default', ratio: 0.8 },
   { value: 'premium', ratio: '0.2' },
   { value: 'auto', ratio: 'automatic', maxRatio: 0.15 },
 ]
 
 describe('API key maximum group ratio form', () => {
-  test('defaults a fixed group to its current effective ratio', () => {
+  test('defaults a fixed group to twice its current effective ratio', () => {
     const values = getApiKeyFormDefaultValues(false, groups, 'default')
     assert.equal(values.group, '')
     assert.equal(values.max_group_ratio_enabled, true)
-    assert.equal(values.max_group_ratio, 0.1)
+    assert.equal(values.max_group_ratio, 1.6)
   })
 
-  test('defaults auto group to the highest current candidate ratio', () => {
+  test('defaults auto group to twice the highest current candidate ratio', () => {
     const values = getApiKeyFormDefaultValues(true, groups)
     assert.equal(values.group, 'auto')
     assert.equal(values.max_group_ratio_enabled, true)
-    assert.equal(values.max_group_ratio, 0.15)
-    assert.equal(getDefaultMaxGroupRatio('auto', groups), 0.15)
+    assert.equal(values.max_group_ratio, 0.3)
+    assert.equal(getDefaultMaxGroupRatio('auto', groups), 0.3)
   })
 
   test('preserves zero and sends null only when protection is disabled', () => {
@@ -103,11 +103,11 @@ describe('API key maximum group ratio form', () => {
 
   test('classifies protected, exceeded, and unrestricted keys', () => {
     const protectedKey = getApiKeyRatioProtectionState(
-      { group: 'default', max_group_ratio: 0.1 },
+      { group: 'default', max_group_ratio: 1.6 },
       groups
     )
     assert.deepEqual(protectedKey, {
-      currentRatio: 0.1,
+      currentRatio: 0.8,
       protected: true,
       exceeded: false,
     })

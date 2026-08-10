@@ -143,7 +143,7 @@ function parseGroupRatio(ratio: number | string | undefined) {
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
-export function getDefaultMaxGroupRatio(
+export function getEffectiveGroupRatio(
   group: string,
   groups: GroupRatioOption[],
   inheritedGroup: string = DEFAULT_GROUP
@@ -169,6 +169,15 @@ export function getDefaultMaxGroupRatio(
   return ratios.length > 0 ? Math.max(...ratios) : undefined
 }
 
+export function getDefaultMaxGroupRatio(
+  group: string,
+  groups: GroupRatioOption[],
+  inheritedGroup: string = DEFAULT_GROUP
+) {
+  const effectiveRatio = getEffectiveGroupRatio(group, groups, inheritedGroup)
+  return effectiveRatio === undefined ? undefined : effectiveRatio * 2
+}
+
 export type ApiKeyRatioProtectionState = {
   currentRatio?: number
   protected: boolean
@@ -180,7 +189,7 @@ export function getApiKeyRatioProtectionState(
   groups: GroupRatioOption[],
   inheritedGroup: string = DEFAULT_GROUP
 ): ApiKeyRatioProtectionState {
-  const currentRatio = getDefaultMaxGroupRatio(
+  const currentRatio = getEffectiveGroupRatio(
     apiKey.group || '',
     groups,
     inheritedGroup

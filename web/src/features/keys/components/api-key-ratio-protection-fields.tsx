@@ -33,6 +33,7 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 
 import {
+  getEffectiveGroupRatio,
   getDefaultMaxGroupRatio,
   type ApiKeyFormValues,
   type GroupRatioOption,
@@ -53,7 +54,7 @@ export function ApiKeyRatioProtectionFields({
   const selectedGroup = form.watch('group')
   const enabled = form.watch('max_group_ratio_enabled')
   const maximum = form.watch('max_group_ratio')
-  const currentRatio = getDefaultMaxGroupRatio(
+  const currentRatio = getEffectiveGroupRatio(
     selectedGroup || '',
     groups,
     currentUserGroup
@@ -94,7 +95,14 @@ export function ApiKeyRatioProtectionFields({
                     checked &&
                     form.getValues('max_group_ratio') === undefined
                   ) {
-                    form.setValue('max_group_ratio', currentRatio)
+                    form.setValue(
+                      'max_group_ratio',
+                      getDefaultMaxGroupRatio(
+                        selectedGroup || '',
+                        groups,
+                        currentUserGroup
+                      )
+                    )
                   }
                 }}
               />
