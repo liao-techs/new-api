@@ -3,8 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"os"
-	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -17,15 +15,24 @@ type fakeRawRelayInserter struct {
 	exchanges []RawRelayExchange
 	err       error
 	closed    bool
+	started   chan struct{}
+	block     chan struct{}
+	startOnce sync.Once
 }
 
-func (f *fakeRawRelayInserter) Insert(_ context.Context, exchanges []RawRelayExchange) error {
+func (f *fakeRawRelayInserter) Insert(_ context.Context, exchange RawRelayExchange) error {
+	if f.started != nil {
+		f.startOnce.Do(func() { close(f.started) })
+	}
+	if f.block != nil {
+		<-f.block
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
 		return f.err
 	}
-	f.exchanges = append(f.exchanges, exchanges...)
+	f.exchanges = append(f.exchanges, exchange)
 	return nil
 }
 
@@ -36,10 +43,9 @@ func (f *fakeRawRelayInserter) Close() error {
 	return nil
 }
 
-func TestRawRelayArchiverDurablyStoresAndCommitsExactBodies(t *testing.T) {
-	spoolDir := t.TempDir()
+func TestRawRelayArchiverWritesExactBodiesDirectly(t *testing.T) {
 	inserter := &fakeRawRelayInserter{}
-	archiver, err := newRawRelayArchiver(spoolDir, 10, time.Hour, inserter)
+	archiver, err := newRawRelayArchiver(inserter, time.Second, 1)
 	require.NoError(t, err)
 
 	want := RawRelayExchange{
@@ -61,40 +67,41 @@ func TestRawRelayArchiverDurablyStoresAndCommitsExactBodies(t *testing.T) {
 		CaptureStatus: "complete",
 	}
 	require.NoError(t, archiver.store(want))
-
-	entries, err := os.ReadDir(spoolDir)
-	require.NoError(t, err)
-	require.Len(t, entries, 1, "record must exist on disk before ClickHouse acknowledgement")
-	require.True(t, slices.ContainsFunc(entries, func(entry os.DirEntry) bool { return !entry.IsDir() }))
-
-	count, err := archiver.processBatch(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, 1, count)
-	require.Len(t, inserter.exchanges, 1)
-	got := inserter.exchanges[0]
-	require.True(t, want.EventTime.Equal(got.EventTime))
-	want.EventTime = time.Time{}
-	got.EventTime = time.Time{}
-	require.Equal(t, want, got)
-
-	entries, err = os.ReadDir(spoolDir)
-	require.NoError(t, err)
-	require.Empty(t, entries, "spool file is removed only after ClickHouse acknowledgement")
+	require.NoError(t, archiver.close(context.Background()))
+	require.Equal(t, []RawRelayExchange{want}, inserter.exchanges)
 }
 
-func TestRawRelayArchiverKeepsSpoolWhenInsertFails(t *testing.T) {
-	spoolDir := t.TempDir()
+func TestRawRelayArchiverHandlesInsertFailureInBackground(t *testing.T) {
 	inserter := &fakeRawRelayInserter{err: errors.New("clickhouse unavailable")}
-	archiver, err := newRawRelayArchiver(spoolDir, 10, time.Hour, inserter)
+	archiver, err := newRawRelayArchiver(inserter, time.Second, 1)
 	require.NoError(t, err)
+
 	require.NoError(t, archiver.store(RawRelayExchange{
 		EventTime: time.Now(),
-		RequestID: "req-retry-test",
+		RequestID: "req-direct-write-test",
 	}))
+	require.NoError(t, archiver.close(context.Background()))
+}
 
-	_, err = archiver.processBatch(context.Background())
-	require.ErrorContains(t, err, "clickhouse unavailable")
-	entries, readErr := os.ReadDir(spoolDir)
-	require.NoError(t, readErr)
-	require.Len(t, entries, 1, "failed batches must remain durable for retry")
+func TestRawRelayArchiverDefaultsCaptureStatus(t *testing.T) {
+	inserter := &fakeRawRelayInserter{}
+	archiver, err := newRawRelayArchiver(inserter, time.Second, 1)
+	require.NoError(t, err)
+
+	require.NoError(t, archiver.store(RawRelayExchange{RequestID: "req-default-status"}))
+	require.NoError(t, archiver.close(context.Background()))
+	require.Equal(t, "complete", inserter.exchanges[0].CaptureStatus)
+}
+
+func TestRawRelayArchiverDoesNotBlockRequestOnInsert(t *testing.T) {
+	started := make(chan struct{})
+	block := make(chan struct{})
+	inserter := &fakeRawRelayInserter{started: started, block: block}
+	archiver, err := newRawRelayArchiver(inserter, time.Second, 1)
+	require.NoError(t, err)
+
+	require.NoError(t, archiver.store(RawRelayExchange{RequestID: "req-async-test"}))
+	<-started
+	close(block)
+	require.NoError(t, archiver.close(context.Background()))
 }

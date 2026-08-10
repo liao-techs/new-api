@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -17,10 +15,9 @@ import (
 )
 
 const (
-	rawRelayArchiveTable       = "ck.ooioo_raw_relay_exchanges"
-	defaultRawRelaySpoolDir    = "/data/raw-relay-archive"
-	defaultRawRelayBatchSize   = 50
-	defaultRawRelayFlushSecond = 2
+	rawRelayArchiveTable                = "ck.ooioo_raw_relay_exchanges"
+	defaultRawRelayInsertTimeoutSeconds = 15
+	defaultRawRelayMaxConcurrent        = 16
 )
 
 const rawRelayArchiveInsertSQL = `INSERT INTO ` + rawRelayArchiveTable + ` (
@@ -28,7 +25,7 @@ const rawRelayArchiveInsertSQL = `INSERT INTO ` + rawRelayArchiveTable + ` (
 	method, request_path, model_name, channel_ids, status_code,
 	request_body, response_body, request_bytes, response_bytes,
 	capture_status, capture_error
-) VALUES`
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // RawRelayExchange is the exact request/response pair captured for one client
 // relay request. RequestID is the canonical join key to the existing logs table.
@@ -52,8 +49,8 @@ type RawRelayExchange struct {
 	CaptureError  string    `json:"capture_error"`
 }
 
-type rawRelayBatchInserter interface {
-	Insert(context.Context, []RawRelayExchange) error
+type rawRelayInserter interface {
+	Insert(context.Context, RawRelayExchange) error
 	Close() error
 }
 
@@ -61,35 +58,28 @@ type clickHouseRawRelayInserter struct {
 	conn driver.Conn
 }
 
-func (i *clickHouseRawRelayInserter) Insert(ctx context.Context, exchanges []RawRelayExchange) error {
-	batch, err := i.conn.PrepareBatch(ctx, rawRelayArchiveInsertSQL)
-	if err != nil {
-		return err
-	}
-	for _, exchange := range exchanges {
-		if err := batch.Append(
-			exchange.EventTime,
-			exchange.DurationMs,
-			exchange.RequestID,
-			exchange.UserID,
-			exchange.TokenID,
-			exchange.GroupName,
-			exchange.Method,
-			exchange.RequestPath,
-			exchange.ModelName,
-			exchange.ChannelIDs,
-			exchange.StatusCode,
-			string(exchange.RequestBody),
-			string(exchange.ResponseBody),
-			exchange.RequestBytes,
-			exchange.ResponseBytes,
-			exchange.CaptureStatus,
-			exchange.CaptureError,
-		); err != nil {
-			return err
-		}
-	}
-	return batch.Send()
+func (i *clickHouseRawRelayInserter) Insert(ctx context.Context, exchange RawRelayExchange) error {
+	return i.conn.Exec(
+		ctx,
+		rawRelayArchiveInsertSQL,
+		exchange.EventTime,
+		exchange.DurationMs,
+		exchange.RequestID,
+		exchange.UserID,
+		exchange.TokenID,
+		exchange.GroupName,
+		exchange.Method,
+		exchange.RequestPath,
+		exchange.ModelName,
+		exchange.ChannelIDs,
+		exchange.StatusCode,
+		string(exchange.RequestBody),
+		string(exchange.ResponseBody),
+		exchange.RequestBytes,
+		exchange.ResponseBytes,
+		exchange.CaptureStatus,
+		exchange.CaptureError,
+	)
 }
 
 func (i *clickHouseRawRelayInserter) Close() error {
@@ -97,15 +87,15 @@ func (i *clickHouseRawRelayInserter) Close() error {
 }
 
 type rawRelayArchiver struct {
-	spoolDir     string
-	batchSize    int
-	flushEvery   time.Duration
-	inserter     rawRelayBatchInserter
-	stop         chan struct{}
-	done         chan struct{}
-	closeOnce    sync.Once
-	lastErrorLog time.Time
-	logMu        sync.Mutex
+	inserter      rawRelayInserter
+	insertTimeout time.Duration
+	insertSlots   chan struct{}
+	pending       sync.WaitGroup
+	stateMu       sync.Mutex
+	closing       bool
+	logMu         sync.Mutex
+	lastErrorLog  time.Time
+	closeOnce     sync.Once
 }
 
 var (
@@ -113,9 +103,8 @@ var (
 	activeRawRelayArchiver *rawRelayArchiver
 )
 
-// InitRawRelayArchive starts the durable spool worker when explicitly enabled.
-// A ClickHouse outage does not fail application startup: completed exchanges
-// remain in the spool and are retried in the background.
+// InitRawRelayArchive initializes the direct ClickHouse writer. The table is a
+// ClickHouse Buffer table, so batching and flushing are handled server-side.
 func InitRawRelayArchive() error {
 	if !common.GetEnvOrDefaultBool("RAW_RELAY_ARCHIVE_ENABLED", false) {
 		return nil
@@ -130,33 +119,46 @@ func InitRawRelayArchive() error {
 		return fmt.Errorf("parse raw relay archive ClickHouse DSN: %w", err)
 	}
 	options.DialTimeout = 5 * time.Second
-	options.ReadTimeout = 15 * time.Second
-	options.MaxOpenConns = 4
-	options.MaxIdleConns = 2
+	options.ReadTimeout = 30 * time.Second
+	options.MaxOpenConns = 16
+	options.MaxIdleConns = 4
 	options.ConnMaxLifetime = 30 * time.Minute
 	if options.Compression == nil {
 		options.Compression = &clickhouse.Compression{Method: clickhouse.CompressionLZ4}
 	}
 
-	spoolDir := common.GetEnvOrDefaultString("RAW_RELAY_ARCHIVE_SPOOL_DIR", defaultRawRelaySpoolDir)
-	batchSize := common.GetEnvOrDefault("RAW_RELAY_ARCHIVE_BATCH_SIZE", defaultRawRelayBatchSize)
-	if batchSize <= 0 {
-		batchSize = defaultRawRelayBatchSize
+	insertTimeoutSeconds := common.GetEnvOrDefault(
+		"RAW_RELAY_ARCHIVE_INSERT_TIMEOUT_SECONDS",
+		defaultRawRelayInsertTimeoutSeconds,
+	)
+	if insertTimeoutSeconds <= 0 {
+		insertTimeoutSeconds = defaultRawRelayInsertTimeoutSeconds
 	}
-	flushSeconds := common.GetEnvOrDefault("RAW_RELAY_ARCHIVE_FLUSH_SECONDS", defaultRawRelayFlushSecond)
-	if flushSeconds <= 0 {
-		flushSeconds = defaultRawRelayFlushSecond
+	insertTimeout := time.Duration(insertTimeoutSeconds) * time.Second
+	maxConcurrent := common.GetEnvOrDefault(
+		"RAW_RELAY_ARCHIVE_MAX_CONCURRENT_INSERTS",
+		defaultRawRelayMaxConcurrent,
+	)
+	if maxConcurrent <= 0 {
+		maxConcurrent = defaultRawRelayMaxConcurrent
 	}
 
 	conn, err := clickhouse.Open(options)
 	if err != nil {
 		return fmt.Errorf("open raw relay archive ClickHouse connection: %w", err)
 	}
+	pingCtx, cancel := context.WithTimeout(context.Background(), insertTimeout)
+	err = conn.Ping(pingCtx)
+	cancel()
+	if err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("ping raw relay archive ClickHouse: %w", err)
+	}
+
 	archiver, err := newRawRelayArchiver(
-		spoolDir,
-		batchSize,
-		time.Duration(flushSeconds)*time.Second,
 		&clickHouseRawRelayInserter{conn: conn},
+		insertTimeout,
+		maxConcurrent,
 	)
 	if err != nil {
 		_ = conn.Close()
@@ -171,31 +173,24 @@ func InitRawRelayArchive() error {
 	}
 	activeRawRelayArchiver = archiver
 	rawRelayArchiveMu.Unlock()
-	archiver.start()
-	common.SysLog("raw relay archive enabled with durable ClickHouse spool")
+	common.SysLog("raw relay archive enabled with asynchronous ClickHouse Buffer writes")
 	return nil
 }
 
-func newRawRelayArchiver(spoolDir string, batchSize int, flushEvery time.Duration, inserter rawRelayBatchInserter) (*rawRelayArchiver, error) {
-	if strings.TrimSpace(spoolDir) == "" {
-		return nil, errors.New("raw relay archive spool directory is empty")
-	}
+func newRawRelayArchiver(inserter rawRelayInserter, insertTimeout time.Duration, maxConcurrent int) (*rawRelayArchiver, error) {
 	if inserter == nil {
 		return nil, errors.New("raw relay archive inserter is nil")
 	}
-	if err := os.MkdirAll(spoolDir, 0o700); err != nil {
-		return nil, fmt.Errorf("create raw relay archive spool directory: %w", err)
+	if insertTimeout <= 0 {
+		return nil, errors.New("raw relay archive insert timeout must be positive")
 	}
-	if err := os.Chmod(spoolDir, 0o700); err != nil {
-		return nil, fmt.Errorf("secure raw relay archive spool directory: %w", err)
+	if maxConcurrent <= 0 {
+		return nil, errors.New("raw relay archive max concurrent inserts must be positive")
 	}
 	return &rawRelayArchiver{
-		spoolDir:   spoolDir,
-		batchSize:  batchSize,
-		flushEvery: flushEvery,
-		inserter:   inserter,
-		stop:       make(chan struct{}),
-		done:       make(chan struct{}),
+		inserter:      inserter,
+		insertTimeout: insertTimeout,
+		insertSlots:   make(chan struct{}, maxConcurrent),
 	}, nil
 }
 
@@ -205,8 +200,8 @@ func RawRelayArchiveEnabled() bool {
 	return activeRawRelayArchiver != nil
 }
 
-// StoreRawRelayExchange durably spools a completed exchange before returning.
-// The ClickHouse worker deletes the file only after the batch is acknowledged.
+// StoreRawRelayExchange hands one completed exchange to a background insert.
+// The request handler never waits for a ClickHouse connection or response.
 func StoreRawRelayExchange(exchange RawRelayExchange) error {
 	rawRelayArchiveMu.RLock()
 	archiver := activeRawRelayArchiver
@@ -221,139 +216,39 @@ func (a *rawRelayArchiver) store(exchange RawRelayExchange) error {
 	if exchange.CaptureStatus == "" {
 		exchange.CaptureStatus = "complete"
 	}
-	payload, err := common.Marshal(exchange)
-	if err != nil {
-		return fmt.Errorf("marshal raw relay exchange: %w", err)
+
+	a.stateMu.Lock()
+	if a.closing {
+		a.stateMu.Unlock()
+		return errors.New("raw relay archive is shutting down")
 	}
-	tmp, err := os.CreateTemp(a.spoolDir, ".raw-relay-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create raw relay exchange spool file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	removeTmp := true
-	defer func() {
-		_ = tmp.Close()
-		if removeTmp {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if err := tmp.Chmod(0o600); err != nil {
-		return fmt.Errorf("chmod raw relay exchange spool file: %w", err)
-	}
-	if _, err := tmp.Write(payload); err != nil {
-		return fmt.Errorf("write raw relay exchange spool file: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		return fmt.Errorf("sync raw relay exchange spool file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close raw relay exchange spool file: %w", err)
-	}
-	finalName := fmt.Sprintf("%020d-%s.raw", exchange.EventTime.UnixNano(), filepath.Base(tmpPath))
-	finalPath := filepath.Join(a.spoolDir, finalName)
-	if err := os.Rename(tmpPath, finalPath); err != nil {
-		return fmt.Errorf("commit raw relay exchange spool file: %w", err)
-	}
-	removeTmp = false
-	if dir, err := os.Open(a.spoolDir); err == nil {
-		_ = dir.Sync()
-		_ = dir.Close()
-	}
+	a.pending.Add(1)
+	a.stateMu.Unlock()
+
+	go a.insert(exchange)
 	return nil
 }
 
-func (a *rawRelayArchiver) start() {
-	go a.run()
-}
+func (a *rawRelayArchiver) insert(exchange RawRelayExchange) {
+	defer a.pending.Done()
+	a.insertSlots <- struct{}{}
+	defer func() { <-a.insertSlots }()
 
-func (a *rawRelayArchiver) run() {
-	defer close(a.done)
-	ticker := time.NewTicker(a.flushEvery)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			a.drainAvailable(context.Background())
-		case <-a.stop:
-			return
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), a.insertTimeout)
+	defer cancel()
+	if err := a.inserter.Insert(ctx, exchange); err != nil {
+		a.logInsertError(exchange.RequestID, err)
 	}
 }
 
-func (a *rawRelayArchiver) drainAvailable(ctx context.Context) {
-	for {
-		count, err := a.processBatch(ctx)
-		if err != nil {
-			a.logWorkerError(err)
-			return
-		}
-		if count < a.batchSize {
-			return
-		}
-	}
-}
-
-func (a *rawRelayArchiver) processBatch(ctx context.Context) (int, error) {
-	entries, err := os.ReadDir(a.spoolDir)
-	if err != nil {
-		return 0, fmt.Errorf("read raw relay archive spool: %w", err)
-	}
-	paths := make([]string, 0, a.batchSize)
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".raw") {
-			continue
-		}
-		paths = append(paths, filepath.Join(a.spoolDir, entry.Name()))
-	}
-	sort.Strings(paths)
-	if len(paths) > a.batchSize {
-		paths = paths[:a.batchSize]
-	}
-	if len(paths) == 0 {
-		return 0, nil
-	}
-
-	exchanges := make([]RawRelayExchange, 0, len(paths))
-	validPaths := make([]string, 0, len(paths))
-	for _, path := range paths {
-		payload, err := os.ReadFile(path)
-		if err != nil {
-			return 0, fmt.Errorf("read raw relay archive record: %w", err)
-		}
-		var exchange RawRelayExchange
-		if err := common.Unmarshal(payload, &exchange); err != nil {
-			badPath := strings.TrimSuffix(path, ".raw") + ".bad"
-			if renameErr := os.Rename(path, badPath); renameErr != nil {
-				return 0, fmt.Errorf("quarantine invalid raw relay archive record: %w", renameErr)
-			}
-			a.logWorkerError(fmt.Errorf("invalid raw relay archive record moved to %s: %w", filepath.Base(badPath), err))
-			continue
-		}
-		exchanges = append(exchanges, exchange)
-		validPaths = append(validPaths, path)
-	}
-	if len(exchanges) == 0 {
-		return len(paths), nil
-	}
-	if err := a.inserter.Insert(ctx, exchanges); err != nil {
-		return 0, fmt.Errorf("insert raw relay archive batch: %w", err)
-	}
-	for _, path := range validPaths {
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return 0, fmt.Errorf("remove committed raw relay archive record: %w", err)
-		}
-	}
-	return len(paths), nil
-}
-
-func (a *rawRelayArchiver) logWorkerError(err error) {
+func (a *rawRelayArchiver) logInsertError(requestID string, err error) {
 	a.logMu.Lock()
 	defer a.logMu.Unlock()
 	if time.Since(a.lastErrorLog) < 30*time.Second {
 		return
 	}
 	a.lastErrorLog = time.Now()
-	common.SysError("raw relay archive worker: " + err.Error())
+	common.SysError(fmt.Sprintf("asynchronous raw relay archive insert failed for request %s: %v", requestID, err))
 }
 
 func CloseRawRelayArchive(ctx context.Context) error {
@@ -368,23 +263,26 @@ func CloseRawRelayArchive(ctx context.Context) error {
 }
 
 func (a *rawRelayArchiver) close(ctx context.Context) error {
-	a.closeOnce.Do(func() { close(a.stop) })
+	a.stateMu.Lock()
+	a.closing = true
+	a.stateMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		a.pending.Wait()
+		close(done)
+	}()
+
 	select {
-	case <-a.done:
+	case <-done:
 	case <-ctx.Done():
 		_ = a.inserter.Close()
 		return ctx.Err()
 	}
 
-	for {
-		count, err := a.processBatch(ctx)
-		if err != nil {
-			_ = a.inserter.Close()
-			return err
-		}
-		if count < a.batchSize {
-			break
-		}
-	}
-	return a.inserter.Close()
+	var closeErr error
+	a.closeOnce.Do(func() {
+		closeErr = a.inserter.Close()
+	})
+	return closeErr
 }
