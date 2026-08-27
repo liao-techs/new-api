@@ -123,6 +123,10 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 		if len(autoGroups) == 0 {
 			return nil, selectGroup, errors.New("auto groups is not enabled")
 		}
+		autoGroups, err = FilterAutoGroupsByTokenRatioLimit(param.Ctx, userGroup, autoGroups)
+		if err != nil {
+			return nil, selectGroup, err
+		}
 
 		// startGroupIndex: the group index to start searching from
 		// startGroupIndex: 开始搜索的分组索引
@@ -272,6 +276,8 @@ type ChannelSelectError struct {
 	// NoAvailableChannel marks the "no channel for this group and model"
 	// outcome so the distributor can name the claiming task plugin.
 	NoAvailableChannel bool
+	// LimitErr is set when the token price cap rejects the selected group.
+	LimitErr *TokenGroupRatioLimitError
 }
 
 // SelectChannelForRequest resolves the channel for one attempt with the rules
@@ -320,7 +326,18 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 			if affinitySatisfied {
 				if usingGroup == "auto" {
 					userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
-					for _, g := range GetRequestAutoGroups(c, userGroup) {
+					autoGroups, filterErr := FilterAutoGroupsByTokenRatioLimit(c, userGroup, GetRequestAutoGroups(c, userGroup))
+					if filterErr != nil {
+						var limitErr *TokenGroupRatioLimitError
+						if errors.As(filterErr, &limitErr) {
+							return nil, "", channelSelectErrorFromRatioLimit(limitErr)
+						}
+						return nil, "", &ChannelSelectError{
+							StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeModelNotFound, MessageID: i18n.MsgDistributorGetChannelFailed,
+							Params: map[string]any{"Group": usingGroup, "Model": modelName, "Error": filterErr.Error()},
+						}
+					}
+					for _, g := range autoGroups {
 						if model.IsChannelEnabledForGroupModel(g, modelName, preferred.Id) {
 							selectGroup = g
 							common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
@@ -350,6 +367,10 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 		var err error
 		channel, selectGroup, err = CacheGetRandomSatisfiedChannel(retry)
 		if err != nil {
+			var limitErr *TokenGroupRatioLimitError
+			if errors.As(err, &limitErr) {
+				return nil, selectGroup, channelSelectErrorFromRatioLimit(limitErr)
+			}
 			showGroup := usingGroup
 			if usingGroup == "auto" {
 				showGroup = fmt.Sprintf("auto(%s)", selectGroup)
@@ -378,6 +399,15 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 
 // Origin-task pins report a fixed code so task polling can tell a retired
 // channel from a malformed request.
+func channelSelectErrorFromRatioLimit(limitErr *TokenGroupRatioLimitError) *ChannelSelectError {
+	return &ChannelSelectError{
+		StatusCode: http.StatusPaymentRequired,
+		Code:       types.ErrorCodePriceLimitExceeded,
+		Message:    limitErr.Error(),
+		LimitErr:   limitErr,
+	}
+}
+
 func pinnedChannelUnavailable(pin dto.ChannelPin, statusCode int, messageID string) *ChannelSelectError {
 	if pin.Source == dto.PinSourceOriginTask {
 		return &ChannelSelectError{StatusCode: http.StatusBadRequest, Code: "origin_task_channel_disabled", Message: "origin_task_channel_disabled"}

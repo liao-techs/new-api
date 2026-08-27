@@ -198,6 +198,11 @@ func TaskErrorWrapperLocal(err error, code string, statusCode int) *taskdto.Task
 }
 
 func TaskErrorWrapper(err error, code string, statusCode int) *taskdto.TaskError {
+	var limitErr *TokenGroupRatioLimitError
+	if errors.As(err, &limitErr) {
+		code = string(types.ErrorCodePriceLimitExceeded)
+		statusCode = http.StatusPaymentRequired
+	}
 	text := err.Error()
 	lowerText := strings.ToLower(text)
 	if strings.Contains(lowerText, "post") || strings.Contains(lowerText, "dial") || strings.Contains(lowerText, "http") {
@@ -211,6 +216,9 @@ func TaskErrorWrapper(err error, code string, statusCode int) *taskdto.TaskError
 		Message:    text,
 		StatusCode: statusCode,
 		Error:      err,
+	}
+	if limitErr != nil {
+		taskError.Data = limitErr
 	}
 
 	return taskError
