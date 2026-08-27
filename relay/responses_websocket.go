@@ -922,6 +922,9 @@ func selectResponsesWSChannel(c *gin.Context, modelName string, retryParam *serv
 	}
 	channel, _, selectErr := service.SelectChannelForRequest(c, modelName, retryParam)
 	if selectErr != nil {
+		if selectErr.LimitErr != nil {
+			return nil, service.NewTokenGroupRatioLimitAPIError(selectErr.LimitErr)
+		}
 		message := selectErr.Message
 		if selectErr.MessageID != "" {
 			message = i18n.T(c, selectErr.MessageID, selectErr.Params)
