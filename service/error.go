@@ -200,6 +200,11 @@ func TaskErrorWrapperLocal(err error, code string, statusCode int) *taskdto.Task
 // TaskErrorWrapper masks the upstream addresses of the task channel in network
 // errors; see common.MaskSensitiveInfo.
 func TaskErrorWrapper(err error, code string, statusCode int, upstreamURLs ...string) *taskdto.TaskError {
+	var limitErr *TokenGroupRatioLimitError
+	if errors.As(err, &limitErr) {
+		code = string(types.ErrorCodePriceLimitExceeded)
+		statusCode = http.StatusPaymentRequired
+	}
 	text := err.Error()
 	lowerText := strings.ToLower(text)
 	if strings.Contains(lowerText, "post") || strings.Contains(lowerText, "dial") || strings.Contains(lowerText, "http") {
@@ -213,6 +218,9 @@ func TaskErrorWrapper(err error, code string, statusCode int, upstreamURLs ...st
 		Message:    text,
 		StatusCode: statusCode,
 		Error:      err,
+	}
+	if limitErr != nil {
+		taskError.Data = limitErr
 	}
 
 	return taskError

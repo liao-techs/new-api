@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/QuantumNous/new-api/common"
@@ -45,6 +46,14 @@ func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.N
 	priceData, err := helper.ModelPriceHelper(c, info, tokens, meta)
 	if err != nil {
 		return types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))
+	}
+	if err := service.CheckTokenGroupRatioLimit(c, info.UsingGroup, priceData.GroupRatioInfo.GroupRatio); err != nil {
+		var limitErr *service.TokenGroupRatioLimitError
+		if errors.As(err, &limitErr) {
+			service.RecordTokenGroupRatioLimitAudit(c, limitErr)
+			return service.NewTokenGroupRatioLimitAPIError(limitErr)
+		}
+		return types.NewError(err, types.ErrorCodePriceLimitExceeded, types.ErrOptionWithStatusCode(http.StatusPaymentRequired), types.ErrOptionWithSkipRetry())
 	}
 	if priceData.FreeModel {
 		logger.LogInfo(c, common.LogText("model %s is free, skipping pre-consume", info.OriginModelName))

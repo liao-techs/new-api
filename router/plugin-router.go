@@ -149,6 +149,7 @@ func productionPluginRouteHandlers(generation *jsplugin.RoutingGeneration, group
 		pinRoute,
 		middleware.NativeRouteCredential(keys...),
 		middleware.TokenAuth(),
+		middleware.RawRelayArchive(),
 		middleware.SystemPerformanceCheck(),
 		middleware.ModelRequestRateLimit(),
 		middleware.PrepareTaskPluginRoute(),

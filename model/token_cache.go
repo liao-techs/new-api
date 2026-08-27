@@ -65,11 +65,81 @@ func invalidateTokenCacheForMutation(key string) error {
 	return common.RDB.Del(ctx, getTokenCacheKey(key)).Err()
 }
 
+// updateTokenCacheMetadata publishes token metadata without overwriting the
+// live quota counters maintained by the atomic reservation path. The Lua
+// transaction makes the existence check and write atomic with cache fences.
+// CacheMAC covers the metadata, including MaxGroupRatio, so a metadata write
+// refreshes the MAC. ARGV[18] is MaxGroupRatio and ARGV[19] is the TTL.
+func updateTokenCacheMetadata(token Token) error {
+	if !common.RedisEnabled {
+		return nil
+	}
+	allowIps := ""
+	if token.AllowIps != nil {
+		allowIps = *token.AllowIps
+	}
+	maxGroupRatio := ""
+	if token.MaxGroupRatio != nil {
+		maxGroupRatio = strconv.FormatFloat(*token.MaxGroupRatio, 'g', -1, 64)
+	}
+	token.CacheExpiresAt = time.Now().Add(time.Duration(tokenCacheTTLSeconds()) * time.Second).UnixMilli()
+	mac, err := token.cacheMAC()
+	if err != nil {
+		return err
+	}
+	const script = `
+if redis.call('EXISTS', KEYS[2]) == 1 then
+  return 0
+end
+if redis.call('EXISTS', KEYS[1]) == 1 then
+  redis.call('HSET', KEYS[1],
+    'Id', ARGV[1], 'UserId', ARGV[2], 'Status', ARGV[3], 'Name', ARGV[4],
+    'CreatedTime', ARGV[5], 'AccessedTime', ARGV[6], 'ExpiredTime', ARGV[7],
+    'UnlimitedQuota', ARGV[8], 'ModelLimitsEnabled', ARGV[9], 'ModelLimits', ARGV[10],
+    'AllowIps', ARGV[11], 'Group', ARGV[12], 'CrossGroupRetry', ARGV[13],
+    'AutoGroups', ARGV[14], 'AllowUserQuotaQuery', ARGV[17], 'MaxGroupRatio', ARGV[18],
+    'CacheExpiresAt', ARGV[20], 'CacheMAC', ARGV[21])
+else
+  redis.call('HSET', KEYS[1],
+    'Id', ARGV[1], 'UserId', ARGV[2], 'Status', ARGV[3], 'Name', ARGV[4],
+    'CreatedTime', ARGV[5], 'AccessedTime', ARGV[6], 'ExpiredTime', ARGV[7],
+    'UnlimitedQuota', ARGV[8], 'ModelLimitsEnabled', ARGV[9], 'ModelLimits', ARGV[10],
+    'AllowIps', ARGV[11], 'Group', ARGV[12], 'CrossGroupRetry', ARGV[13],
+    'AutoGroups', ARGV[14], 'RemainQuota', ARGV[15], 'UsedQuota', ARGV[16],
+    'AllowUserQuotaQuery', ARGV[17], 'MaxGroupRatio', ARGV[18],
+    'CacheExpiresAt', ARGV[20], 'CacheMAC', ARGV[21])
+end
+redis.call('EXPIRE', KEYS[1], ARGV[19])
+return 1`
+
+	result, err := common.RDB.Eval(context.Background(), script, []string{
+		getTokenCacheKey(token.Key), getTokenCacheFenceKey(token.Key),
+	},
+		token.Id, token.UserId, token.Status, token.Name,
+		token.CreatedTime, token.AccessedTime, token.ExpiredTime,
+		strconv.FormatBool(token.UnlimitedQuota), strconv.FormatBool(token.ModelLimitsEnabled),
+		token.ModelLimits, allowIps, token.Group, strconv.FormatBool(token.CrossGroupRetry),
+		token.AutoGroups, token.RemainQuota, token.UsedQuota,
+		strconv.FormatBool(token.AllowUserQuotaQuery), maxGroupRatio,
+		tokenCacheTTLSeconds(),
+		token.CacheExpiresAt, mac,
+	).Int()
+	if err != nil {
+		return err
+	}
+	if result == 0 {
+		return fmt.Errorf("token cache mutation blocked by active fence")
+	}
+	return nil
+}
+
 // cacheInitToken publishes database metadata when the hash is cold or fails
 // verification. Existing quota counters survive repairs because pre-consume
 // can update Redis before the database catches up; counters that are no
 // longer integers are replaced from the snapshot.
 // Returns 0 when fenced, 1 after initialization, or 2 for an existing hash.
+// ARGV[18] is MaxGroupRatio, ARGV[19] is the TTL, and ARGV[20] onward are the
+// cache MAC fields.
 func cacheInitToken(token Token) (int, error) {
 	if !common.RedisEnabled {
 		return 0, nil
@@ -77,6 +147,10 @@ func cacheInitToken(token Token) (int, error) {
 	allowIps := ""
 	if token.AllowIps != nil {
 		allowIps = *token.AllowIps
+	}
+	maxGroupRatio := ""
+	if token.MaxGroupRatio != nil {
+		maxGroupRatio = strconv.FormatFloat(*token.MaxGroupRatio, 'g', -1, 64)
 	}
 	cacheKey := getTokenCacheKey(token.Key)
 	var existing Token
@@ -98,8 +172,8 @@ if redis.call('EXISTS', KEYS[2]) == 1 then
   return 0
 end
 local exists = redis.call('EXISTS', KEYS[1])
-if exists == 1 and (ARGV[21] ~= 'true' or (redis.call('HGET', KEYS[1], 'CacheMAC') or '') ~= ARGV[22]) then
-  redis.call('EXPIRE', KEYS[1], ARGV[18])
+if exists == 1 and (ARGV[22] ~= 'true' or (redis.call('HGET', KEYS[1], 'CacheMAC') or '') ~= ARGV[23]) then
+  redis.call('EXPIRE', KEYS[1], ARGV[19])
   return 2
 end
 redis.call('HDEL', KEYS[1], 'DeletedAt')
@@ -108,14 +182,14 @@ redis.call('HSET', KEYS[1],
   'CreatedTime', ARGV[5], 'ExpiredTime', ARGV[7],
   'UnlimitedQuota', ARGV[8], 'ModelLimitsEnabled', ARGV[9], 'ModelLimits', ARGV[10],
   'AllowIps', ARGV[11], 'Group', ARGV[12], 'CrossGroupRetry', ARGV[13],
-  'AutoGroups', ARGV[14], 'AllowUserQuotaQuery', ARGV[17],
-  'CacheExpiresAt', ARGV[19], 'CacheMAC', ARGV[20])
+  'AutoGroups', ARGV[14], 'AllowUserQuotaQuery', ARGV[17], 'MaxGroupRatio', ARGV[18],
+  'CacheExpiresAt', ARGV[20], 'CacheMAC', ARGV[21])
 for _, counter in ipairs({{'AccessedTime', ARGV[6]}, {'RemainQuota', ARGV[15]}, {'UsedQuota', ARGV[16]}}) do
   if not string.match(redis.call('HGET', KEYS[1], counter[1]) or '', '^-?%d+$') then
     redis.call('HSET', KEYS[1], counter[1], counter[2])
   end
 end
-redis.call('EXPIRE', KEYS[1], ARGV[18])
+redis.call('EXPIRE', KEYS[1], ARGV[19])
 if exists == 1 then
   return 2
 end
@@ -129,7 +203,7 @@ return 1`
 		strconv.FormatBool(token.UnlimitedQuota), strconv.FormatBool(token.ModelLimitsEnabled),
 		token.ModelLimits, allowIps, token.Group, strconv.FormatBool(token.CrossGroupRetry),
 		token.AutoGroups, token.RemainQuota, token.UsedQuota,
-		strconv.FormatBool(token.AllowUserQuotaQuery),
+		strconv.FormatBool(token.AllowUserQuotaQuery), maxGroupRatio,
 		tokenCacheTTLSeconds(),
 		token.CacheExpiresAt, mac, strconv.FormatBool(repair), existing.CacheMAC,
 	).Int()

@@ -72,7 +72,13 @@ func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 		return
 	}
 	other.SetAdmin("use_channel", ctx.GetStringSlice("use_channel"))
+	if ctx.GetBool("channel_test_request") {
+		other.SetAdmin("is_channel_test", true)
+	}
 	if relayInfo != nil {
+		if relayInfo.IsChannelTest {
+			other.SetAdmin("is_channel_test", true)
+		}
 		if billingModel := relayInfo.GetBillingModelName(); billingModel != "" && billingModel != relayInfo.OriginModelName {
 			other.SetAdmin("billing_model", billingModel)
 		}
