@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -34,7 +36,8 @@ func (input *tokenAutoGroupsInput) UnmarshalJSON(data []byte) error {
 
 type tokenRequest struct {
 	model.Token
-	AutoGroups tokenAutoGroupsInput `json:"auto_groups"`
+	AutoGroups    tokenAutoGroupsInput `json:"auto_groups"`
+	MaxGroupRatio json.RawMessage      `json:"max_group_ratio"`
 }
 
 type tokenResponse struct {
@@ -50,6 +53,41 @@ func maxTokenQuota() int {
 		return common.MaxWalletQuota
 	}
 	return quota
+}
+
+func (r *tokenRequest) parseMaxGroupRatio() (*float64, bool, error) {
+	if len(r.MaxGroupRatio) == 0 {
+		return nil, false, nil
+	}
+	var value *float64
+	if err := common.Unmarshal(r.MaxGroupRatio, &value); err != nil {
+		return nil, true, err
+	}
+	return value, true, nil
+}
+
+func validateTokenMaxGroupRatio(maxGroupRatio *float64) error {
+	if maxGroupRatio == nil {
+		return nil
+	}
+	if math.IsNaN(*maxGroupRatio) || math.IsInf(*maxGroupRatio, 0) || *maxGroupRatio < 0 {
+		return fmt.Errorf("最高允许倍率必须是大于或等于 0 的有限数字")
+	}
+	return nil
+}
+
+func tokenMaxGroupRatioAuditValue(value *float64) interface{} {
+	if value == nil {
+		return "unlimited"
+	}
+	return *value
+}
+
+func tokenMaxGroupRatiosEqual(left, right *float64) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func buildMaskedTokenResponse(token *model.Token) *tokenResponse {
@@ -283,12 +321,24 @@ func AddToken(c *gin.Context) {
 		return
 	}
 	token := request.Token
+	maxGroupRatio, maxGroupRatioPresent, err := request.parseMaxGroupRatio()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if maxGroupRatioPresent {
+		token.MaxGroupRatio = maxGroupRatio
+	}
 	if len(token.Name) > 50 {
 		common.ApiErrorI18n(c, i18n.MsgTokenNameTooLong)
 		return
 	}
 	params := tokenAuditParams(c)
 	params["name"] = token.Name
+	if err := validateTokenMaxGroupRatio(token.MaxGroupRatio); err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	// 非无限额度时，检查额度值是否超出有效范围
 	if !token.UnlimitedQuota {
 		if token.RemainQuota < 0 {
@@ -344,6 +394,7 @@ func AddToken(c *gin.Context) {
 		Group:              token.Group,
 		CrossGroupRetry:    token.CrossGroupRetry,
 		AutoGroups:         token.AutoGroups,
+		MaxGroupRatio:      token.MaxGroupRatio,
 	}
 	err = cleanToken.Insert()
 	if err != nil {
@@ -351,6 +402,9 @@ func AddToken(c *gin.Context) {
 		return
 	}
 	params["id"] = cleanToken.Id
+	if maxGroupRatioPresent && cleanToken.MaxGroupRatio != nil {
+		params["max_group_ratio"] = tokenMaxGroupRatioAuditValue(cleanToken.MaxGroupRatio)
+	}
 	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -394,8 +448,20 @@ func UpdateToken(c *gin.Context) {
 	if token.Id > 0 {
 		params["id"] = token.Id
 	}
+	maxGroupRatio, maxGroupRatioPresent, err := request.parseMaxGroupRatio()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if maxGroupRatioPresent {
+		token.MaxGroupRatio = maxGroupRatio
+	}
 	if len(token.Name) > 50 {
 		common.ApiErrorI18n(c, i18n.MsgTokenNameTooLong)
+		return
+	}
+	if err := validateTokenMaxGroupRatio(token.MaxGroupRatio); err != nil {
+		common.ApiError(c, err)
 		return
 	}
 	if !token.UnlimitedQuota {
@@ -447,8 +513,15 @@ func UpdateToken(c *gin.Context) {
 				return
 			}
 		}
+		if maxGroupRatioPresent {
+			cleanToken.MaxGroupRatio = token.MaxGroupRatio
+		}
 	}
-	err = cleanToken.Update()
+	if maxGroupRatioPresent && statusOnly == "" {
+		err = cleanToken.UpdateWithMaxGroupRatioSafety(previous)
+	} else {
+		err = cleanToken.Update()
+	}
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -473,12 +546,17 @@ func UpdateToken(c *gin.Context) {
 			{"group", previous.Group != cleanToken.Group},
 			{"cross_group_retry", previous.CrossGroupRetry != cleanToken.CrossGroupRetry},
 			{"auto_groups", previous.AutoGroups != cleanToken.AutoGroups},
+			{"max_group_ratio", !tokenMaxGroupRatiosEqual(previous.MaxGroupRatio, cleanToken.MaxGroupRatio)},
 		} {
 			if field.changed {
 				changedFields = append(changedFields, field.name)
 			}
 		}
 		params["changed_fields"] = changedFields
+		if maxGroupRatioPresent &&
+			!tokenMaxGroupRatiosEqual(previous.MaxGroupRatio, cleanToken.MaxGroupRatio) {
+			params["max_group_ratio"] = tokenMaxGroupRatioAuditValue(cleanToken.MaxGroupRatio)
+		}
 	}
 	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	c.JSON(http.StatusOK, gin.H{

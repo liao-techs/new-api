@@ -475,6 +475,7 @@ func TokenAuth() func(c *gin.Context) {
 		if err != nil {
 			return
 		}
+		service.CaptureTokenGroupRatioSnapshot(c, userCache.Group)
 		c.Next()
 	}
 }
@@ -532,6 +533,9 @@ func SetupContextForToken(c *gin.Context, token *model.Token, parts ...string) e
 		} else if len(autoGroups) > 0 {
 			common.SetContextKey(c, constant.ContextKeyTokenAutoGroups, autoGroups)
 		}
+	}
+	if token.MaxGroupRatio != nil {
+		common.SetContextKey(c, constant.ContextKeyTokenMaxGroupRatio, *token.MaxGroupRatio)
 	}
 	if len(parts) > 1 {
 		if model.IsAdmin(token.UserId) {

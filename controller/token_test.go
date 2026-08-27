@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
@@ -38,10 +39,11 @@ type tokenPageResponse struct {
 }
 
 type tokenResponseItem struct {
-	ID     int    `json:"id"`
-	Name   string `json:"name"`
-	Key    string `json:"key"`
-	Status int    `json:"status"`
+	ID            int      `json:"id"`
+	Name          string   `json:"name"`
+	Key           string   `json:"key"`
+	Status        int      `json:"status"`
+	MaxGroupRatio *float64 `json:"max_group_ratio"`
 }
 
 type tokenKeyResponse struct {
@@ -115,6 +117,16 @@ func setupTokenControllerTestDB(t *testing.T) *gorm.DB {
 
 	db := openTokenControllerTestDB(t)
 	migrateTokenControllerTestDB(t, db)
+	return db
+}
+
+func setupTokenControllerAuditTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+
+	db := setupTokenControllerTestDB(t)
+	if err := db.AutoMigrate(&model.Log{}); err != nil {
+		t.Fatalf("failed to migrate audit log table: %v", err)
+	}
 	return db
 }
 
@@ -368,6 +380,9 @@ func runTokenMigrationCompatibilityTest(t *testing.T, db *gorm.DB, dialect strin
 	if migratedToken.AutoGroups != "" {
 		t.Fatalf("expected legacy token to inherit global Auto groups, got %q", migratedToken.AutoGroups)
 	}
+	if migratedToken.MaxGroupRatio != nil {
+		t.Fatalf("expected legacy token max_group_ratio to remain NULL, got %v", *migratedToken.MaxGroupRatio)
+	}
 
 	inserted := model.Token{
 		UserId:             8,
@@ -407,6 +422,254 @@ func TestTokenAutoMigrateUsesVarchar128KeyColumn(t *testing.T) {
 	}
 	if got := getSQLiteColumnType(t, db, "tokens", "auto_groups"); got != "text" {
 		t.Fatalf("expected auto_groups column type text, got %q", got)
+	}
+	if !db.Migrator().HasColumn(&model.Token{}, "max_group_ratio") {
+		t.Fatal("expected token migration to add nullable max_group_ratio column")
+	}
+}
+
+func TestAddTokenPersistsMaxGroupRatio(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	maxRatio := 0.12
+	body := map[string]any{
+		"name":                 "guarded-token",
+		"expired_time":         -1,
+		"remain_quota":         100,
+		"unlimited_quota":      true,
+		"model_limits_enabled": false,
+		"model_limits":         "",
+		"group":                "default",
+		"cross_group_retry":    false,
+		"max_group_ratio":      maxRatio,
+	}
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", body, 1)
+	AddToken(ctx)
+
+	response := decodeAPIResponse(t, recorder)
+	if !response.Success {
+		t.Fatalf("expected token creation to succeed, got message: %s", response.Message)
+	}
+
+	var token model.Token
+	if err := db.First(&token, "name = ?", "guarded-token").Error; err != nil {
+		t.Fatalf("failed to load created token: %v", err)
+	}
+	if token.MaxGroupRatio == nil || *token.MaxGroupRatio != maxRatio {
+		t.Fatalf("expected max_group_ratio %v, got %v", maxRatio, token.MaxGroupRatio)
+	}
+}
+
+func TestAddTokenRecordsMaxGroupRatioAuditWithoutKeyMaterial(t *testing.T) {
+	db := setupTokenControllerAuditTestDB(t)
+	maxRatio := 0.12
+	body := map[string]any{
+		"name":            "audited-token",
+		"expired_time":    -1,
+		"unlimited_quota": true,
+		"group":           "default",
+		"max_group_ratio": maxRatio,
+	}
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", body, 7)
+	AddToken(ctx)
+	if response := decodeAPIResponse(t, recorder); !response.Success {
+		t.Fatalf("expected token creation to succeed, got message: %s", response.Message)
+	}
+
+	var token model.Token
+	if err := db.First(&token, "name = ?", "audited-token").Error; err != nil {
+		t.Fatalf("failed to load token: %v", err)
+	}
+	if !common.GetContextKeyBool(ctx, constant.ContextKeyTokenAuditSucceeded) {
+		t.Fatal("expected token creation to mark the request audit as succeeded")
+	}
+	params := tokenAuditParams(ctx)
+	if params["id"] != token.Id {
+		t.Fatalf("expected audit token id %d, got %#v", token.Id, params["id"])
+	}
+	if params["name"] != "audited-token" {
+		t.Fatalf("expected audit token name, got %#v", params["name"])
+	}
+	if params["max_group_ratio"] != maxRatio {
+		t.Fatalf("expected audit max_group_ratio %v, got %#v", maxRatio, params["max_group_ratio"])
+	}
+	encoded, err := common.Marshal(params)
+	if err != nil {
+		t.Fatalf("failed to encode audit params: %v", err)
+	}
+	if strings.Contains(string(encoded), token.Key) {
+		t.Fatal("token audit must not contain API key material")
+	}
+}
+
+func TestAddTokenRejectsNegativeMaxGroupRatio(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	body := map[string]any{
+		"name":              "invalid-guarded-token",
+		"expired_time":      -1,
+		"unlimited_quota":   true,
+		"group":             "default",
+		"max_group_ratio":   -0.01,
+		"cross_group_retry": false,
+	}
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", body, 1)
+	AddToken(ctx)
+
+	response := decodeAPIResponse(t, recorder)
+	if response.Success {
+		t.Fatal("expected negative max_group_ratio to be rejected")
+	}
+	var count int64
+	if err := db.Model(&model.Token{}).Count(&count).Error; err != nil {
+		t.Fatalf("failed to count tokens: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected rejected token not to be persisted, got %d rows", count)
+	}
+}
+
+func TestUpdateTokenCanSetZeroAndClearMaxGroupRatio(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	token := seedToken(t, db, 1, "editable-guard", "guard1234token5678")
+
+	update := func(maxRatio any) tokenResponseItem {
+		t.Helper()
+		body := map[string]any{
+			"id":                   token.Id,
+			"name":                 token.Name,
+			"expired_time":         -1,
+			"remain_quota":         100,
+			"unlimited_quota":      true,
+			"model_limits_enabled": false,
+			"model_limits":         "",
+			"group":                "default",
+			"cross_group_retry":    false,
+			"max_group_ratio":      maxRatio,
+		}
+		ctx, recorder := newAuthenticatedContext(t, http.MethodPut, "/api/token/", body, 1)
+		UpdateToken(ctx)
+		response := decodeAPIResponse(t, recorder)
+		if !response.Success {
+			t.Fatalf("expected token update to succeed, got message: %s", response.Message)
+		}
+		var detail tokenResponseItem
+		if err := common.Unmarshal(response.Data, &detail); err != nil {
+			t.Fatalf("failed to decode token update response: %v", err)
+		}
+		return detail
+	}
+
+	detail := update(0)
+	if detail.MaxGroupRatio == nil || *detail.MaxGroupRatio != 0 {
+		t.Fatalf("expected response to retain zero max_group_ratio, got %v", detail.MaxGroupRatio)
+	}
+	var stored model.Token
+	if err := db.First(&stored, token.Id).Error; err != nil {
+		t.Fatalf("failed to reload updated token: %v", err)
+	}
+	if stored.MaxGroupRatio == nil || *stored.MaxGroupRatio != 0 {
+		t.Fatalf("expected persisted zero max_group_ratio, got %v", stored.MaxGroupRatio)
+	}
+
+	detail = update(nil)
+	if detail.MaxGroupRatio != nil {
+		t.Fatalf("expected response max_group_ratio to be cleared, got %v", *detail.MaxGroupRatio)
+	}
+	stored = model.Token{}
+	if err := db.First(&stored, token.Id).Error; err != nil {
+		t.Fatalf("failed to reload cleared token: %v", err)
+	}
+	if stored.MaxGroupRatio != nil {
+		t.Fatalf("expected persisted max_group_ratio to be NULL, got %v", *stored.MaxGroupRatio)
+	}
+}
+
+func TestUpdateTokenRecordsChangedMaxGroupRatioAudit(t *testing.T) {
+	db := setupTokenControllerAuditTestDB(t)
+	token := seedToken(t, db, 8, "audit-update", "audit1234update5678")
+	oldRatio := 0.1
+	if err := db.Model(token).Update("max_group_ratio", oldRatio).Error; err != nil {
+		t.Fatalf("failed to seed old ratio: %v", err)
+	}
+	body := map[string]any{
+		"id":              token.Id,
+		"name":            token.Name,
+		"expired_time":    -1,
+		"unlimited_quota": true,
+		"group":           "default",
+		"max_group_ratio": 0.2,
+	}
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPut, "/api/token/", body, 8)
+	UpdateToken(ctx)
+	if response := decodeAPIResponse(t, recorder); !response.Success {
+		t.Fatalf("expected token update to succeed, got message: %s", response.Message)
+	}
+
+	if !common.GetContextKeyBool(ctx, constant.ContextKeyTokenAuditSucceeded) {
+		t.Fatal("expected token update to mark the request audit as succeeded")
+	}
+	params := tokenAuditParams(ctx)
+	if params["id"] != token.Id {
+		t.Fatalf("expected audit token id %d, got %#v", token.Id, params["id"])
+	}
+	if params["max_group_ratio"] != 0.2 {
+		t.Fatalf("expected audit max_group_ratio 0.2, got %#v", params["max_group_ratio"])
+	}
+	changed, _ := params["changed_fields"].([]string)
+	foundRatioChange := false
+	for _, field := range changed {
+		if field == "max_group_ratio" {
+			foundRatioChange = true
+			break
+		}
+	}
+	if !foundRatioChange {
+		t.Fatalf("expected changed_fields to include max_group_ratio, got %#v", params["changed_fields"])
+	}
+	encoded, err := common.Marshal(params)
+	if err != nil {
+		t.Fatalf("failed to encode audit params: %v", err)
+	}
+	if strings.Contains(string(encoded), token.Key) {
+		t.Fatal("token update audit must not contain API key material")
+	}
+}
+
+func TestUpdateTokenPreservesMaxGroupRatioWhenFieldIsOmitted(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	token := seedToken(t, db, 1, "legacy-client-edit", "legacy1234client5678")
+	maxRatio := 0.12
+	if err := db.Model(token).Update("max_group_ratio", maxRatio).Error; err != nil {
+		t.Fatalf("failed to seed max_group_ratio: %v", err)
+	}
+
+	body := map[string]any{
+		"id":                   token.Id,
+		"name":                 token.Name,
+		"expired_time":         -1,
+		"remain_quota":         100,
+		"unlimited_quota":      true,
+		"model_limits_enabled": false,
+		"model_limits":         "",
+		"group":                "default",
+		"cross_group_retry":    false,
+	}
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPut, "/api/token/", body, 1)
+	UpdateToken(ctx)
+
+	response := decodeAPIResponse(t, recorder)
+	if !response.Success {
+		t.Fatalf("expected legacy client update to succeed, got message: %s", response.Message)
+	}
+	var stored model.Token
+	if err := db.First(&stored, token.Id).Error; err != nil {
+		t.Fatalf("failed to reload token: %v", err)
+	}
+	if stored.MaxGroupRatio == nil || *stored.MaxGroupRatio != maxRatio {
+		t.Fatalf("expected omitted max_group_ratio to preserve %v, got %v", maxRatio, stored.MaxGroupRatio)
 	}
 }
 

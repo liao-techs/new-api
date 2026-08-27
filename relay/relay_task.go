@@ -300,6 +300,13 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 			return nil, service.TaskErrorWrapper(err, "model_price_error", http.StatusBadRequest)
 		}
 	}
+	if err := service.CheckTokenGroupRatioLimit(c, info.UsingGroup, priceData.GroupRatioInfo.GroupRatio); err != nil {
+		var limitErr *service.TokenGroupRatioLimitError
+		if errors.As(err, &limitErr) {
+			service.RecordTokenGroupRatioLimitAudit(c, limitErr)
+		}
+		return nil, service.TaskErrorWrapper(err, "model_price_error", http.StatusBadRequest)
+	}
 	info.PriceData = priceData
 
 	// 5. 计费估算：让适配器根据用户请求提供 OtherRatios（时长、分辨率等）

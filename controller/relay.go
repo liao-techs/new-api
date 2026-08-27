@@ -96,14 +96,18 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			case types.RelayFormatOpenAIRealtime:
 				helper.WssError(c, ws, newAPIError.ToOpenAIError())
 			case types.RelayFormatClaude:
-				c.JSON(newAPIError.StatusCode, gin.H{
+				response := gin.H{
 					"type":  "error",
 					"error": newAPIError.ToClaudeError(),
-				})
+				}
+				attachPriceGuard(response, newAPIError)
+				c.JSON(newAPIError.StatusCode, response)
 			default:
-				c.JSON(newAPIError.StatusCode, gin.H{
+				response := gin.H{
 					"error": newAPIError.ToOpenAIError(),
-				})
+				}
+				attachPriceGuard(response, newAPIError)
+				c.JSON(newAPIError.StatusCode, response)
 			}
 		}
 	}()
@@ -206,6 +210,16 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}
 }
 
+func attachPriceGuard(response gin.H, apiErr *types.NewAPIError) {
+	if apiErr == nil || apiErr.GetErrorCode() != types.ErrorCodePriceLimitExceeded || len(apiErr.Metadata) == 0 {
+		return
+	}
+	var priceGuard map[string]float64
+	if err := common.Unmarshal(apiErr.Metadata, &priceGuard); err == nil {
+		response["price_guard"] = priceGuard
+	}
+}
+
 // CountClaudeTokens implements Anthropic's token-counting utility endpoint.
 // It deliberately skips upstream generation and billing; callers use this
 // endpoint to size prompts before creating a Message.
@@ -267,7 +281,25 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 	}
 	channel, selectGroup, err := service.CacheGetRandomSatisfiedChannel(retryParam)
 	if err != nil {
+		var limitErr *service.TokenGroupRatioLimitError
+		if errors.As(err, &limitErr) {
+			service.RecordTokenGroupRatioLimitAudit(c, limitErr)
+			return nil, service.NewTokenGroupRatioLimitAPIError(limitErr)
+		}
 		return nil, types.NewError(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %s", selectGroup, info.OriginModelName, err.Error()), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+	}
+	if err := refreshRetryGroupRatioAndCheck(c, info); err != nil {
+		var limitErr *service.TokenGroupRatioLimitError
+		if errors.As(err, &limitErr) {
+			service.RecordTokenGroupRatioLimitAudit(c, limitErr)
+			return nil, service.NewTokenGroupRatioLimitAPIError(limitErr)
+		}
+		return nil, types.NewError(
+			err,
+			types.ErrorCodePriceLimitExceeded,
+			types.ErrOptionWithStatusCode(http.StatusPaymentRequired),
+			types.ErrOptionWithSkipRetry(),
+		)
 	}
 	if channel == nil {
 		return nil, types.NewError(fmt.Errorf("分组 %s 下模型 %s 的可用渠道不存在（retry）", selectGroup, info.OriginModelName), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
@@ -282,12 +314,27 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 	return channel, nil
 }
 
+func refreshRetryGroupRatioAndCheck(c *gin.Context, info *relaycommon.RelayInfo) error {
+	info.PriceData.GroupRatioInfo = helper.HandleGroupRatio(c, info)
+	return service.CheckTokenGroupRatioLimit(
+		c,
+		info.UsingGroup,
+		info.PriceData.GroupRatioInfo.GroupRatio,
+	)
+}
+
 func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
 	return service.ShouldRetryRelayError(c, openaiErr, retryTimes)
 }
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {
 	service.ProcessChannelError(c, channelError, err, relayInfo)
+}
+
+func appendChannelTestAdminInfo(c *gin.Context, other *model.LogOther) {
+	if c != nil && c.GetBool(contextKeyChannelTestRequest) {
+		other.SetAdmin("is_channel_test", true)
+	}
 }
 
 func RelayMidjourney(c *gin.Context) {
@@ -318,19 +365,31 @@ func RelayMidjourney(c *gin.Context) {
 	//err = relayMidjourneySubmit(c, relayMode)
 	log.Println(mjErr)
 	if mjErr != nil {
-		statusCode := http.StatusBadRequest
-		if mjErr.Code == 30 {
-			mjErr.Result = "当前分组负载已饱和，请稍后再试，或升级账户以提升服务质量。"
-			statusCode = http.StatusTooManyRequests
-		}
-		c.JSON(statusCode, gin.H{
-			"description": fmt.Sprintf("%s %s", mjErr.Description, mjErr.Result),
-			"type":        "upstream_error",
-			"code":        mjErr.Code,
-		})
-		channelId := c.GetInt("channel_id")
-		logger.LogError(c, fmt.Sprintf("relay error (channel #%d, status code %d): %s", channelId, statusCode, fmt.Sprintf("%s %s", mjErr.Description, mjErr.Result)))
+		respondMidjourneyError(c, mjErr)
 	}
+}
+
+func respondMidjourneyError(c *gin.Context, mjErr *taskdto.MidjourneyResponse) {
+	statusCode := http.StatusBadRequest
+	errorType := "upstream_error"
+	if mjErr.Code == 30 {
+		mjErr.Result = "当前分组负载已饱和，请稍后再试，或升级账户以提升服务质量。"
+		statusCode = http.StatusTooManyRequests
+	} else if mjErr.Code == http.StatusPaymentRequired {
+		statusCode = http.StatusPaymentRequired
+		errorType = string(types.ErrorCodePriceLimitExceeded)
+	}
+	response := gin.H{
+		"description": fmt.Sprintf("%s %s", mjErr.Description, mjErr.Result),
+		"type":        errorType,
+		"code":        mjErr.Code,
+	}
+	if statusCode == http.StatusPaymentRequired && mjErr.Properties != nil {
+		response["price_guard"] = mjErr.Properties
+	}
+	c.JSON(statusCode, response)
+	channelId := c.GetInt("channel_id")
+	logger.LogError(c, fmt.Sprintf("relay error (channel #%d, status code %d): %s", channelId, statusCode, fmt.Sprintf("%s %s", mjErr.Description, mjErr.Result)))
 }
 
 func RelayNotImplemented(c *gin.Context) {

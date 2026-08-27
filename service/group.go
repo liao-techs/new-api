@@ -106,6 +106,20 @@ func GetRequestAutoGroups(c *gin.Context, userGroup string) []string {
 	return FilterUserTokenAutoGroups(userGroup, groups)
 }
 
+func GetUserAutoGroupMaxRatio(userGroup string) (float64, bool) {
+	autoGroups := GetUserAutoGroup(userGroup)
+	var maxRatio float64
+	found := false
+	for _, group := range autoGroups {
+		ratio := GetUserGroupRatio(userGroup, group)
+		if !found || ratio > maxRatio {
+			maxRatio = ratio
+			found = true
+		}
+	}
+	return maxRatio, found
+}
+
 // GetGroupsEnabledModels 按 groups 顺序获取各分组启用的模型并去重
 func GetGroupsEnabledModels(groups []string) []string {
 	seen := make(map[string]struct{})

@@ -49,6 +49,8 @@ var auditContentTemplates = map[string]string{
 	"option.passkey_domains_confirmed": "Confirmed removal of Passkey domains: ${domains}; affected ${known}; unknown ${unknown}",
 	"option.passkey_domains_blocked":   "Passkey domain change blocked: ${domains}; affected ${known}; unknown ${unknown}",
 	"option.passkey_domains_failed":    "Passkey domain update failed",
+	"token.max_group_ratio_create":     "Created API Key ratio protection (token ID: ${token_id}, maximum ratio: ${max_group_ratio})",
+	"token.max_group_ratio_update":     "Updated API Key ratio protection (token ID: ${token_id}, from ${old_max_group_ratio} to ${new_max_group_ratio})",
 
 	"channel.create":             "Created channel ${name} (type ${type}, count ${count})",
 	"channel.update":             "Updated channel ${name} (ID: ${id})",
