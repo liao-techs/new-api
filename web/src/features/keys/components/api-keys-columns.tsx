@@ -23,6 +23,11 @@ import { useTranslation } from 'react-i18next'
 
 import { StatusBadge } from '@/components/status-badge'
 import { Checkbox } from '@/components/ui/checkbox'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { useMediaQuery } from '@/hooks'
 import { toIntlLocale } from '@/i18n/languages'
 import { getUserGroups } from '@/lib/api'
@@ -31,6 +36,7 @@ import { requireServerSuccess } from '@/lib/server-error-message'
 import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import { API_KEY_STATUSES } from '../constants'
+import { getApiKeyRatioProtectionState, type GroupRatioOption } from '../lib'
 import type { ApiKey } from '../types'
 import { ApiKeyGroupCell } from './api-key-group-cell'
 import { ApiKeyQuotaCell } from './api-key-quota-cell'
@@ -67,7 +73,11 @@ function useGroupRatios(): Record<string, number | string> {
   return data ?? EMPTY_GROUP_RATIOS
 }
 
-export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
+export function useApiKeysColumns(
+  now: number,
+  groups: GroupRatioOption[],
+  inheritedGroup: string
+): ColumnDef<ApiKey>[] {
   const { t, i18n } = useTranslation()
   useSystemConfigStore((state) => state.config.currency)
   const { meta: currency } = getCurrencyDisplay()
@@ -167,6 +177,58 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
         meta: { mobileHidden: true },
       },
       {
+        id: 'ratio_protection',
+        header: t('Price protection'),
+        cell: ({ row }) => {
+          const apiKey = row.original
+          const protection = getApiKeyRatioProtectionState(
+            apiKey,
+            groups,
+            inheritedGroup
+          )
+          if (!protection.protected) {
+            return (
+              <StatusBadge
+                label={t('Unprotected')}
+                variant='warning'
+                copyable={false}
+                className='-ml-1.5'
+              />
+            )
+          }
+          return (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <StatusBadge
+                    label={
+                      protection.exceeded
+                        ? t('Blocked by price cap')
+                        : t('Protected')
+                    }
+                    variant={protection.exceeded ? 'danger' : 'success'}
+                    copyable={false}
+                    className='-ml-1.5'
+                  />
+                }
+              />
+              <TooltipContent>
+                {t(
+                  'Current ratio: {{current}} · Maximum allowed: {{maximum}}',
+                  {
+                    current: protection.currentRatio ?? t('Unknown'),
+                    maximum: apiKey.max_group_ratio,
+                  }
+                )}
+              </TooltipContent>
+            </Tooltip>
+          )
+        },
+        enableSorting: false,
+        size: 170,
+        meta: { mobileHidden: true },
+      },
+      {
         id: 'model_limits',
         accessorKey: 'model_limits',
         header: t('Models'),
@@ -233,6 +295,16 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
         meta: { pinned: 'right' as const },
       },
     ],
-    [t, quotaUnit, now, groupRatios, shouldReduceMotion, locale, justNowLabel]
+    [
+      t,
+      quotaUnit,
+      now,
+      groupRatios,
+      shouldReduceMotion,
+      locale,
+      justNowLabel,
+      groups,
+      inheritedGroup,
+    ]
   )
 }

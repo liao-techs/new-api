@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
@@ -23,6 +24,26 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func TestSetupContextForTokenStoresMaxGroupRatio(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	maxRatio := 0.12
+
+	if err := SetupContextForToken(ctx, &model.Token{
+		Id:            1,
+		UserId:        2,
+		Key:           "context-key",
+		MaxGroupRatio: &maxRatio,
+	}); err != nil {
+		t.Fatalf("failed to setup token context: %v", err)
+	}
+
+	got, ok := common.GetContextKeyType[float64](ctx, constant.ContextKeyTokenMaxGroupRatio)
+	if !ok || got != maxRatio {
+		t.Fatalf("expected max group ratio %v in context, got %v (exists=%v)", maxRatio, got, ok)
+	}
+}
 
 func setupDashboardAuthMiddlewareTest(t *testing.T) {
 	t.Helper()
