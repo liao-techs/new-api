@@ -92,13 +92,25 @@ func Distribute() func(c *gin.Context) {
 							abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
 							return
 						}
-						common.SetContextKey(c, constant.ContextKeyUsingGroup, playgroundRequest.Group)
+						usingGroup = playgroundRequest.Group
+						common.SetContextKey(c, constant.ContextKeyUsingGroup, usingGroup)
 					}
 				}
 			}
 		}
 		if pinned || shouldSelectChannel {
 			usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
+			if shouldSelectChannel && usingGroup != "auto" {
+				userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+				actualRatio, _, _ := service.GetRequestGroupRatio(c, userGroup, usingGroup)
+				if err := service.CheckTokenGroupRatioLimit(c, usingGroup, actualRatio); err != nil {
+					var limitErr *service.TokenGroupRatioLimitError
+					if errors.As(err, &limitErr) {
+						abortWithTokenGroupRatioLimit(c, limitErr)
+						return
+					}
+				}
+			}
 			var selectErr *service.ChannelSelectError
 			if value, exists := c.Get(contextKeyTaskPluginEndpointSelection); exists && !pinned {
 				if selected, ok := value.(taskPluginEndpointSelection); ok && selected.Model == modelRequest.Model && selected.Channel != nil && selected.Channel.Status == common.ChannelStatusEnabled {
@@ -117,6 +129,10 @@ func Distribute() func(c *gin.Context) {
 				})
 			}
 			if selectErr != nil {
+				if selectErr.LimitErr != nil {
+					abortWithTokenGroupRatioLimit(c, selectErr.LimitErr)
+					return
+				}
 				if selectErr.FilterKind == taskdto.FilterTaskPluginIdentity {
 					logTaskPluginChannelDecision(c, selectErr.Channel, modelRequest.Model, "channel_rejected", "identity_mismatch")
 				}
