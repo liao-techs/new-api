@@ -238,6 +238,12 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		common.SysError(fmt.Sprintf("server forced to shutdown: %v", err))
 	}
+	archiveShutdownTimeout := time.Duration(common.GetEnvOrDefault("RAW_RELAY_ARCHIVE_SHUTDOWN_TIMEOUT_SECONDS", 30)) * time.Second
+	archiveCtx, archiveCancel := context.WithTimeout(context.Background(), archiveShutdownTimeout)
+	if err := service.CloseRawRelayArchive(archiveCtx); err != nil {
+		common.SysError(fmt.Sprintf("raw relay archive shutdown: %v", err))
+	}
+	archiveCancel()
 	// 内存中的看板数据保存入库，避免重启丢失未落库数据 (issue #5679)
 	if common.DataExportEnabled {
 		model.SaveQuotaDataCache()
@@ -373,6 +379,10 @@ func InitResources() error {
 	if err != nil {
 		common.SysError("failed to load custom OAuth providers: " + err.Error())
 		// Don't return error, custom OAuth is not critical
+	}
+
+	if err = service.InitRawRelayArchive(); err != nil {
+		return fmt.Errorf("initialize raw relay archive: %w", err)
 	}
 
 	service.StartAuthArtifactCleanup()

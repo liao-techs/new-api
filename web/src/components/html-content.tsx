@@ -21,6 +21,8 @@ import { useEffect, useMemo, useRef } from 'react'
 
 import { cn } from '@/lib/utils'
 
+import { getIsolatedIframeSandbox } from './html-content-sandbox'
+
 export type HtmlContentVariant = 'inline' | 'isolated'
 
 interface HtmlContentProps {
@@ -28,9 +30,6 @@ interface HtmlContentProps {
   className?: string
   variant?: HtmlContentVariant
 }
-
-const isolatedContentSandbox =
-  'allow-forms allow-popups allow-popups-to-escape-sandbox allow-presentation'
 
 const isolatedContentBaseStyles = `
 <style>
@@ -107,7 +106,10 @@ function hardenIsolatedHtml(html: string): string {
 
   template.content.querySelectorAll('iframe').forEach((frame) => {
     frame.removeAttribute('srcdoc')
-    frame.setAttribute('sandbox', isolatedContentSandbox)
+    frame.setAttribute(
+      'sandbox',
+      getIsolatedIframeSandbox(frame.getAttribute('src'), document.baseURI)
+    )
     frame.setAttribute('referrerpolicy', 'no-referrer')
 
     if (!frame.hasAttribute('loading')) {

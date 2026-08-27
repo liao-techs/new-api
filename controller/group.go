@@ -39,10 +39,14 @@ func GetUserGroups(c *gin.Context) {
 		}
 	}
 	if _, ok := userUsableGroups["auto"]; ok {
-		usableGroups["auto"] = map[string]any{
+		autoGroupInfo := map[string]any{
 			"ratio": "自动",
 			"desc":  setting.GetUsableGroupDescription("auto"),
 		}
+		if maxRatio, found := service.GetUserAutoGroupMaxRatio(userGroup); found {
+			autoGroupInfo["max_ratio"] = maxRatio
+		}
+		usableGroups["auto"] = autoGroupInfo
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

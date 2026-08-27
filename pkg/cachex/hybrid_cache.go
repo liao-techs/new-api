@@ -15,6 +15,10 @@ const (
 	defaultRedisOpTimeout   = 2 * time.Second
 	defaultRedisScanTimeout = 30 * time.Second
 	defaultRedisDelTimeout  = 10 * time.Second
+
+	// redisMGetBatchSize caps how many keys go into a single MGET so that a large
+	// namespace scan cannot build one oversized command.
+	redisMGetBatchSize = 500
 )
 
 type HybridCacheConfig[V any] struct {
@@ -134,6 +138,77 @@ func (c *HybridCache[V]) Keys() ([]string, error) {
 		return c.scanKeys(c.ns.MatchPattern())
 	}
 	return c.memCache().Keys(), nil
+}
+
+// GetMany accepts either fully namespaced keys or raw keys and returns the values
+// that are still present, keyed by fully namespaced key. Keys that expired between
+// a preceding Keys() call and this call are simply absent from the result, and a
+// value that fails to decode is skipped rather than failing the whole batch.
+func (c *HybridCache[V]) GetMany(keys []string) (map[string]V, error) {
+	res := make(map[string]V, len(keys))
+	if len(keys) == 0 {
+		return res, nil
+	}
+
+	fullKeys := make([]string, 0, len(keys))
+	seen := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		k = c.ns.FullKey(k)
+		if k == "" {
+			continue
+		}
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		fullKeys = append(fullKeys, k)
+	}
+	if len(fullKeys) == 0 {
+		return res, nil
+	}
+
+	if c.redisOn() {
+		ctx, cancel := context.WithTimeout(context.Background(), defaultRedisScanTimeout)
+		defer cancel()
+
+		for start := 0; start < len(fullKeys); start += redisMGetBatchSize {
+			end := start + redisMGetBatchSize
+			if end > len(fullKeys) {
+				end = len(fullKeys)
+			}
+			batch := fullKeys[start:end]
+
+			vals, err := c.redis.MGet(ctx, batch...).Result()
+			if err != nil && !errors.Is(err, redis.Nil) {
+				return res, err
+			}
+			for i, raw := range vals {
+				if i >= len(batch) || raw == nil {
+					continue
+				}
+				s, ok := raw.(string)
+				if !ok {
+					continue
+				}
+				v, decErr := c.redisCodec.Decode(s)
+				if decErr != nil {
+					continue
+				}
+				res[batch[i]] = v
+			}
+		}
+		return res, nil
+	}
+
+	mem := c.memCache()
+	for _, k := range fullKeys {
+		v, found, err := mem.Get(k)
+		if err != nil || !found {
+			continue
+		}
+		res[k] = v
+	}
+	return res, nil
 }
 
 func (c *HybridCache[V]) scanKeys(match string) ([]string, error) {

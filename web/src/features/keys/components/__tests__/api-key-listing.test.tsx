@@ -80,7 +80,7 @@ await i18n.init({
 const clients: QueryClient[] = []
 
 function QuotaTable(props: { apiKey: ApiKey }) {
-  const columns = useApiKeysColumns(now).filter(
+  const columns = useApiKeysColumns(now, [], 'default').filter(
     (column) => column.id === 'quota'
   )
   const table = useReactTable({
