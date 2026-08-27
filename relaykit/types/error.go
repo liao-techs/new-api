@@ -45,6 +45,7 @@ const (
 	// new api error
 	ErrorCodeCountTokenFailed   ErrorCode = "count_token_failed"
 	ErrorCodeModelPriceError    ErrorCode = "model_price_error"
+	ErrorCodePriceLimitExceeded ErrorCode = "price_limit_exceeded"
 	ErrorCodeInvalidApiType     ErrorCode = "invalid_api_type"
 	ErrorCodeJsonMarshalFailed  ErrorCode = "json_marshal_failed"
 	ErrorCodeDoRequestFailed    ErrorCode = "do_request_failed"

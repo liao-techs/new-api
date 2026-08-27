@@ -35,6 +35,7 @@ import {
   sideDrawerSwitchItemClassName,
 } from '@/components/drawer-layout'
 import { MultiSelect } from '@/components/multi-select'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
   Collapsible,
@@ -72,6 +73,7 @@ import {
   translateServerText,
 } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
+import { useAuthStore } from '@/stores/auth-store'
 
 import {
   createApiKey,
@@ -84,6 +86,7 @@ import {
   getApiKeyFormSchema,
   type ApiKeyFormValues,
   getApiKeyFormDefaultValues,
+  getDefaultMaxGroupRatio,
   transformFormDataToPayload,
   transformApiKeyToFormDefaults,
 } from '../lib'
@@ -92,6 +95,7 @@ import {
   ApiKeyGroupCombobox,
   type ApiKeyGroupOption,
 } from './api-key-group-combobox'
+import { ApiKeyRatioProtectionFields } from './api-key-ratio-protection-fields'
 import { useApiKeys } from './api-keys-provider'
 import { AutoGroupOrderEditor } from './auto-group-order-editor'
 
@@ -117,6 +121,9 @@ export function ApiKeysMutateDrawer({
     null
   )
   const defaultUseAutoGroup = status?.default_use_auto_group === true
+  const currentUserGroup = useAuthStore(
+    (state) => state.auth.user?.group || 'default'
+  )
 
   // Fetch models
   const { data: modelsData } = useQuery({
@@ -127,28 +134,31 @@ export function ApiKeysMutateDrawer({
   })
 
   // Fetch groups
-  const {
-    data: groupsData,
-    isFetched: groupsFetched,
-    isFetching: groupsFetching,
-  } = useQuery({
+  const groupsQuery = useQuery({
     queryKey: ['user-groups'],
     queryFn: async () => requireServerSuccess(await getUserGroups()),
     enabled: open,
     staleTime: 0,
   })
+  const groupsData = groupsQuery.data
+  const groupsFetched = groupsQuery.isFetched
+  const groupsFetching = groupsQuery.isFetching
 
-  const {
-    data: apiKeyData,
-    isFetched: apiKeyFetched,
-    isFetching: apiKeyFetching,
-  } = useQuery({
+  const apiKeyQuery = useQuery({
     queryKey: ['api-key', currentRowId],
-    queryFn: async () =>
-      requireServerSuccess(await getApiKey(currentRowId ?? 0)),
+    queryFn: async () => {
+      const result = await requireServerSuccess(await getApiKey(currentRowId ?? 0))
+      if (!result.data) {
+        throw new Error('Failed to load API key')
+      }
+      return result.data
+    },
     enabled: open && isUpdate && currentRowId !== undefined,
     staleTime: 0,
   })
+  const apiKeyData = apiKeyQuery.data
+  const apiKeyFetched = apiKeyQuery.isFetched
+  const apiKeyFetching = apiKeyQuery.isFetching
 
   const {
     data: autoGroupsData,
@@ -169,6 +179,7 @@ export function ApiKeysMutateDrawer({
         label: key,
         desc: info.desc ? translateServerText(t, info.desc) : key,
         ratio: info.ratio,
+        maxRatio: info.max_ratio,
       })),
     [groupsData, t]
   )
@@ -205,7 +216,8 @@ export function ApiKeysMutateDrawer({
     defaultValues: getApiKeyFormDefaultValues(defaultUseAutoGroup),
   })
 
-  // Load existing data when updating
+  // React Query owns request cancellation/race handling. The form is reset only
+  // from data matching the current key's query key.
   useEffect(() => {
     if (!open) {
       setInitializedTarget(null)
@@ -225,10 +237,10 @@ export function ApiKeysMutateDrawer({
     const target = isUpdate && currentRow ? `update:${currentRow.id}` : 'create'
     if (initializedTarget === target) return
     if (isUpdate && currentRow) {
-      if (apiKeyData?.success && apiKeyData.data) {
+      if (apiKeyData) {
         form.reset(
           transformApiKeyToFormDefaults(
-            apiKeyData.data,
+            apiKeyData,
             availableAutoGroupNames,
             maxAutoGroups
           )
@@ -237,7 +249,11 @@ export function ApiKeysMutateDrawer({
       }
     } else {
       form.reset(
-        getApiKeyFormDefaultValues(defaultUseAutoGroup && backendHasAuto)
+        getApiKeyFormDefaultValues(
+          defaultUseAutoGroup && backendHasAuto,
+          groups,
+          currentUserGroup
+        )
       )
       setInitializedTarget(target)
     }
@@ -259,12 +275,19 @@ export function ApiKeysMutateDrawer({
     availableAutoGroupNames,
     maxAutoGroups,
     initializedTarget,
+    groups,
+    currentUserGroup,
   ])
 
   const formTarget =
     isUpdate && currentRow ? `update:${currentRow.id}` : 'create'
   const isFormInitialized = initializedTarget === formTarget
   const selectedGroup = form.watch('group')
+  const formDataUnavailable =
+    !isFormInitialized ||
+    groupsQuery.isError ||
+    groups.length === 0 ||
+    (isUpdate && apiKeyQuery.isError)
 
   // Correct group after groups load: if the form value is not in available groups, fall back
   useEffect(() => {
@@ -276,15 +299,28 @@ export function ApiKeysMutateDrawer({
         groups[0]?.value ??
         ''
       form.setValue('group', fallback)
+      if (!isUpdate) {
+        const defaultRatio = getDefaultMaxGroupRatio(
+          fallback,
+          groups,
+          currentUserGroup
+        )
+        form.setValue('max_group_ratio_enabled', defaultRatio !== undefined)
+        form.setValue('max_group_ratio', defaultRatio)
+      }
       if (currentGroup === 'auto') {
         form.setValue('auto_groups', [])
         form.setValue('auto_groups_mode', 'inherit')
         form.setValue('cross_group_retry', false)
       }
     }
-  }, [groups, form, selectedGroup])
+  }, [groups, form, selectedGroup, isUpdate, currentUserGroup])
 
   const onSubmit = async (data: ApiKeyFormValues) => {
+    if (formDataUnavailable) {
+      toast.error(t('Pricing or API key data is not ready. Please retry.'))
+      return
+    }
     setIsSubmitting(true)
     try {
       const basePayload = transformFormDataToPayload(data)
@@ -391,12 +427,52 @@ export function ApiKeysMutateDrawer({
           </SheetDescription>
         </SheetHeader>
         <Form {...form}>
+          {(groupsQuery.isError ||
+            (groupsQuery.isSuccess && groups.length === 0)) && (
+            <Alert variant='destructive'>
+              <AlertDescription className='flex items-center justify-between gap-3'>
+                <span>
+                  {t('Group pricing could not be loaded. Saving is disabled.')}
+                </span>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  onClick={() => void groupsQuery.refetch()}
+                >
+                  {t('Retry')}
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
+          {isUpdate && apiKeyQuery.isError && (
+            <Alert variant='destructive'>
+              <AlertDescription className='flex items-center justify-between gap-3'>
+                <span>
+                  {t(
+                    'API key details could not be loaded. Editing is disabled.'
+                  )}
+                </span>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  onClick={() => void apiKeyQuery.refetch()}
+                >
+                  {t('Retry')}
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
           <form
             id='api-key-form'
             onSubmit={form.handleSubmit(onSubmit, onInvalid)}
-            aria-busy={!isFormInitialized}
-            inert={!isFormInitialized || isSubmitting ? true : undefined}
-            className={sideDrawerFormClassName('gap-5')}
+            className={cn(
+              sideDrawerFormClassName('gap-5'),
+              formDataUnavailable && 'opacity-60'
+            )}
+            inert={formDataUnavailable || isSubmitting}
+            aria-busy={formDataUnavailable}
           >
             <SideDrawerSection>
               <SideDrawerSectionHeader
@@ -435,11 +511,23 @@ export function ApiKeysMutateDrawer({
                             form.setValue('cross_group_retry', true, {
                               shouldDirty: true,
                             })
-                            return
+                          } else {
+                            form.setValue('cross_group_retry', false, {
+                              shouldDirty: true,
+                            })
                           }
-                          form.setValue('cross_group_retry', false, {
-                            shouldDirty: true,
-                          })
+                          if (!isUpdate) {
+                            const defaultRatio = getDefaultMaxGroupRatio(
+                              group,
+                              groups,
+                              currentUserGroup
+                            )
+                            form.setValue(
+                              'max_group_ratio_enabled',
+                              defaultRatio !== undefined
+                            )
+                            form.setValue('max_group_ratio', defaultRatio)
+                          }
                         }}
                         placeholder={t('Select a group')}
                       />
@@ -447,6 +535,12 @@ export function ApiKeysMutateDrawer({
                     <FormMessage />
                   </FormItem>
                 )}
+              />
+
+              <ApiKeyRatioProtectionFields
+                form={form}
+                groups={groups}
+                currentUserGroup={currentUserGroup}
               />
 
               {selectedGroup === 'auto' && (
@@ -792,7 +886,7 @@ export function ApiKeysMutateDrawer({
           <Button
             type='button'
             onClick={form.handleSubmit(onSubmit, onInvalid)}
-            disabled={!isFormInitialized || isSubmitting}
+            disabled={isSubmitting || formDataUnavailable}
             className='w-full sm:w-auto'
           >
             {isSubmitting ? t('Saving...') : t('Save changes')}

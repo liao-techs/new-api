@@ -38,6 +38,7 @@ type AuditRequestInfo struct {
 	Status  int               `json:"status"`
 	Success bool              `json:"success"`
 	Params  map[string]string `json:"params,omitempty"`
+	Detail  map[string]any    `json:"detail,omitempty"`
 }
 
 // AuditFields holds action-specific parameters and root-only extensions.
