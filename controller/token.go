@@ -146,13 +146,18 @@ func setTokenAutoGroups(c *gin.Context, token *model.Token, groups []string) boo
 		return false
 	}
 	seen := make(map[string]struct{}, len(groups))
+	usableGroups, err := service.GetRequestUsableGroups(c, userGroup)
+	if err != nil {
+		common.ApiError(c, err)
+		return false
+	}
 	for _, group := range groups {
 		if _, ok := seen[group]; ok {
 			common.ApiErrorI18n(c, i18n.MsgTokenAutoGroupsDuplicate, map[string]any{"Group": group})
 			return false
 		}
 		seen[group] = struct{}{}
-		if !service.IsUserSelectableGroup(userGroup, group) {
+		if !service.IsUserSelectableGroup(usableGroups, group) {
 			common.ApiErrorI18n(c, i18n.MsgTokenAutoGroupsInvalid, map[string]any{"Group": group})
 			return false
 		}
@@ -217,8 +222,13 @@ func GetTokenAutoGroups(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	usableGroups, err := service.GetRequestUsableGroups(c, userGroup)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	common.ApiSuccess(c, gin.H{
-		"groups":    service.GetUserAutoGroup(userGroup),
+		"groups":    service.GetUserAutoGroup(usableGroups),
 		"max_count": setting.GetMaxTokenAutoGroups(),
 	})
 }

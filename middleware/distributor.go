@@ -113,14 +113,19 @@ func Distribute() func(c *gin.Context) {
 						abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidPlayground, map[string]any{"Error": err.Error()}))
 						return
 					}
-					if playgroundRequest.Group != "" {
-						if !service.GroupInUserUsableGroups(usingGroup, playgroundRequest.Group) && playgroundRequest.Group != usingGroup {
-							abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
-							return
-						}
-						usingGroup = playgroundRequest.Group
-						common.SetContextKey(c, constant.ContextKeyUsingGroup, usingGroup)
+					usableGroups, groupErr := service.GetRequestUsableGroups(c, common.GetContextKeyString(c, constant.ContextKeyUserGroup))
+					if groupErr != nil {
+						abortWithOpenAiMessage(c, http.StatusInternalServerError, i18n.T(c, i18n.MsgDatabaseError))
+						return
 					}
+					if playgroundRequest.Group != "" {
+						usingGroup = playgroundRequest.Group
+					}
+					if _, ok := usableGroups[usingGroup]; !ok {
+						abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
+						return
+					}
+					common.SetContextKey(c, constant.ContextKeyUsingGroup, usingGroup)
 				}
 				if usingGroup != "auto" {
 					userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
@@ -144,7 +149,11 @@ func Distribute() func(c *gin.Context) {
 					if affinitySatisfied {
 						if usingGroup == "auto" {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
-							autoGroups := service.GetRequestAutoGroups(c, userGroup)
+							autoGroups, groupErr := service.GetRequestAutoGroups(c, userGroup)
+							if groupErr != nil {
+								abortWithOpenAiMessage(c, http.StatusInternalServerError, i18n.T(c, i18n.MsgDatabaseError))
+								return
+							}
 							autoGroups, _ = service.FilterAutoGroupsByTokenRatioLimit(c, userGroup, autoGroups)
 							for _, g := range autoGroups {
 								if model.IsChannelEnabledForGroupModel(g, modelRequest.Model, preferred.Id) {

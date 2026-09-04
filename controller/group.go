@@ -3,6 +3,7 @@ package controller
 import (
 	"net/http"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
@@ -25,10 +26,17 @@ func GetGroups(c *gin.Context) {
 
 func GetUserGroups(c *gin.Context) {
 	usableGroups := make(map[string]map[string]any)
-	userGroup := ""
 	userId := c.GetInt("id")
-	userGroup, _ = model.GetUserGroup(userId, false)
-	userUsableGroups := service.GetUserUsableGroups(userGroup)
+	userGroup, err := model.GetUserGroup(userId, false)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	userUsableGroups, err := service.GetRequestUsableGroups(c, userGroup)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	for groupName, _ := range ratio_setting.GetGroupRatioCopy() {
 		// UserUsableGroups contains the groups that the user can use
 		if desc, ok := userUsableGroups[groupName]; ok {
@@ -43,7 +51,7 @@ func GetUserGroups(c *gin.Context) {
 			"ratio": "自动",
 			"desc":  setting.GetUsableGroupDescription("auto"),
 		}
-		if maxRatio, found := service.GetUserAutoGroupMaxRatio(userGroup); found {
+		if maxRatio, found := service.GetUserAutoGroupMaxRatio(userGroup, userUsableGroups); found {
 			autoGroupInfo["max_ratio"] = maxRatio
 		}
 		usableGroups["auto"] = autoGroupInfo

@@ -452,7 +452,11 @@ func (s *responsesWSSession) restoreConnectionContext(c *gin.Context, model stri
 	} else {
 		group := common.GetContextKeyString(c, appconstant.ContextKeyUsingGroup)
 		if group == "auto" {
-			if !slices.Contains(service.GetRequestAutoGroups(c, common.GetContextKeyString(c, appconstant.ContextKeyUserGroup)), s.lockedGroup) {
+			autoGroups, groupErr := service.GetRequestAutoGroups(c, common.GetContextKeyString(c, appconstant.ContextKeyUserGroup))
+			if groupErr != nil {
+				return types.NewErrorWithStatusCode(groupErr, types.ErrorCodeAccessDenied, http.StatusInternalServerError, types.ErrOptionWithSkipRetry())
+			}
+			if !slices.Contains(autoGroups, s.lockedGroup) {
 				return types.NewErrorWithStatusCode(errors.New("the connection group is no longer allowed"), types.ErrorCodeAccessDenied, http.StatusForbidden, types.ErrOptionWithSkipRetry())
 			}
 			group = s.lockedGroup
@@ -866,7 +870,11 @@ func selectResponsesWSChannel(c *gin.Context, modelName string, retryParam *serv
 			if affinitySatisfied {
 				if usingGroup == "auto" {
 					userGroup := common.GetContextKeyString(c, appconstant.ContextKeyUserGroup)
-					for _, g := range service.GetRequestAutoGroups(c, userGroup) {
+					autoGroups, groupErr := service.GetRequestAutoGroups(c, userGroup)
+					if groupErr != nil {
+						return nil, types.NewError(groupErr, types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+					}
+					for _, g := range autoGroups {
 						if appmodel.IsChannelEnabledForGroupModel(g, modelName, preferred.Id) {
 							common.SetContextKey(c, appconstant.ContextKeyAutoGroup, g)
 							service.MarkChannelAffinityUsed(c, g, preferred.Id)
