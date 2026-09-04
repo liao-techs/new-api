@@ -11,7 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func GetUserUsableGroups(userGroup string) map[string]string {
+func configuredUserUsableGroups(userGroup string) map[string]string {
 	groupsCopy := setting.GetUserUsableGroupsCopy()
 	if userGroup != "" {
 		specialSettings, b := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup.Get(userGroup)
@@ -32,32 +32,76 @@ func GetUserUsableGroups(userGroup string) map[string]string {
 				}
 			}
 		}
-		// 如果userGroup不在UserUsableGroups中，返回UserUsableGroups + userGroup
-		if _, ok := groupsCopy[userGroup]; !ok {
-			groupsCopy[userGroup] = "用户分组"
-		}
 	}
 	return groupsCopy
 }
 
-func GroupInUserUsableGroups(userGroup, groupName string) bool {
-	_, ok := GetUserUsableGroups(userGroup)[groupName]
-	return ok
+// GetUserUsableGroups resolves configuration-only access (including anonymous
+// pricing). Authenticated callers must use the user/request-aware resolver.
+func GetUserUsableGroups(userGroup string) map[string]string {
+	groups := configuredUserUsableGroups(userGroup)
+	if userGroup != "" {
+		if _, ok := groups[userGroup]; !ok {
+			groups[userGroup] = "用户分组"
+		}
+	}
+	return groups
 }
 
-func IsUserSelectableGroup(userGroup, groupName string) bool {
+func GetUserUsableGroupsForUser(userId int) (map[string]string, error) {
+	userGroup, subscriptionGroups, err := model.GetUserSubscriptionGroups(userId)
+	if err != nil {
+		return nil, err
+	}
+	groups := configuredUserUsableGroups(userGroup)
+	// Explicit public/admin grants keep their configuration semantics. Only
+	// the implicit users.group grant is withdrawn when its subscription ends.
+	if active, subscribed := subscriptionGroups[userGroup]; userGroup != "" && (!subscribed || active) {
+		if _, ok := groups[userGroup]; !ok {
+			groups[userGroup] = "用户分组"
+		}
+	}
+	for group, active := range subscriptionGroups {
+		if active {
+			if _, ok := groups[group]; !ok {
+				groups[group] = "用户分组"
+			}
+		}
+	}
+	return groups, nil
+}
+
+// Resolve once per request; never cache subscription grants across requests.
+// Expiry/cancellation therefore cannot retain access through the user cache.
+func GetRequestUsableGroups(c *gin.Context, userGroup string) (map[string]string, error) {
+	if groups, ok := common.GetContextKeyType[map[string]string](c, constant.ContextKeyUserUsableGroups); ok {
+		return groups, nil
+	}
+	if userId := c.GetInt("id"); userId > 0 {
+		groups, err := GetUserUsableGroupsForUser(userId)
+		if err != nil {
+			return nil, err
+		}
+		common.SetContextKey(c, constant.ContextKeyUserUsableGroups, groups)
+		return groups, nil
+	}
+	return GetUserUsableGroups(userGroup), nil
+}
+
+func IsUserSelectableGroup(usableGroups map[string]string, groupName string) bool {
 	if groupName == "" || groupName == "auto" {
 		return false
 	}
-	return GroupInUserUsableGroups(userGroup, groupName) && ratio_setting.ContainsGroupRatio(groupName)
+	_, ok := usableGroups[groupName]
+	return ok && ratio_setting.ContainsGroupRatio(groupName)
 }
 
 // GetUserAutoGroup 根据用户分组获取自动分组设置
-func GetUserAutoGroup(userGroup string) []string {
+func GetUserAutoGroup(usableGroups map[string]string) []string {
 	autoGroups := make([]string, 0)
 	seen := make(map[string]struct{})
 	for _, group := range setting.GetAutoGroups() {
-		if !IsUserSelectableGroup(userGroup, group) {
+		if !IsUserSelectableGroup(usableGroups, group) {
 			continue
 		}
 		if _, ok := seen[group]; ok {
@@ -71,12 +115,12 @@ func GetUserAutoGroup(userGroup string) []string {
 
 // FilterUserTokenAutoGroups applies current permissions before the current
 // per-token limit. It intentionally does not fall back to the global Auto list.
-func FilterUserTokenAutoGroups(userGroup string, groups []string) []string {
+func FilterUserTokenAutoGroups(usableGroups map[string]string, groups []string) []string {
 	maxCount := setting.GetMaxTokenAutoGroups()
 	filtered := make([]string, 0, min(len(groups), maxCount))
 	seen := make(map[string]struct{})
 	for _, group := range groups {
-		if !IsUserSelectableGroup(userGroup, group) {
+		if !IsUserSelectableGroup(usableGroups, group) {
 			continue
 		}
 		if _, ok := seen[group]; ok {
@@ -94,20 +138,31 @@ func FilterUserTokenAutoGroups(userGroup string, groups []string) []string {
 // GetRequestAutoGroups resolves the ordered Auto groups for the current token.
 // The absence of the context value means that the token inherits the complete
 // global Auto list; a present (even empty) value is an explicit token snapshot.
-func GetRequestAutoGroups(c *gin.Context, userGroup string) []string {
+func GetRequestAutoGroups(c *gin.Context, userGroup string) ([]string, error) {
+	usableGroups, err := GetRequestUsableGroups(c, userGroup)
+	if err != nil {
+		return nil, err
+	}
+	if group := common.GetContextKeyString(c, constant.ContextKeySubscriptionGroup); group != "" {
+		allowed := make(map[string]string)
+		if desc, ok := usableGroups[group]; ok {
+			allowed[group] = desc
+		}
+		usableGroups = allowed
+	}
 	value, ok := common.GetContextKey(c, constant.ContextKeyTokenAutoGroups)
 	if !ok {
-		return GetUserAutoGroup(userGroup)
+		return GetUserAutoGroup(usableGroups), nil
 	}
 	groups, ok := value.([]string)
 	if !ok {
-		return []string{}
+		return []string{}, nil
 	}
-	return FilterUserTokenAutoGroups(userGroup, groups)
+	return FilterUserTokenAutoGroups(usableGroups, groups), nil
 }
 
-func GetUserAutoGroupMaxRatio(userGroup string) (float64, bool) {
-	autoGroups := GetUserAutoGroup(userGroup)
+func GetUserAutoGroupMaxRatio(userGroup string, usableGroups map[string]string) (float64, bool) {
+	autoGroups := GetUserAutoGroup(usableGroups)
 	var maxRatio float64
 	found := false
 	for _, group := range autoGroups {

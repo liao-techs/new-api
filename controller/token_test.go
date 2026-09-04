@@ -107,7 +107,7 @@ func openTokenControllerTestDB(t *testing.T) *gorm.DB {
 func migrateTokenControllerTestDB(t *testing.T, db *gorm.DB) {
 	t.Helper()
 
-	if err := db.AutoMigrate(&model.Token{}); err != nil {
+	if err := db.AutoMigrate(&model.Token{}, &model.UserSubscription{}); err != nil {
 		t.Fatalf("failed to migrate token table: %v", err)
 	}
 }
