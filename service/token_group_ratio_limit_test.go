@@ -201,7 +201,7 @@ func TestGetUserAutoGroupMaxRatioUsesConfiguredCandidatesAndSpecialRatio(t *test
 		`{"member":{"special":0.11}}`,
 	)
 
-	maxRatio, found := GetUserAutoGroupMaxRatio("member")
+	maxRatio, found := GetUserAutoGroupMaxRatio("member", GetUserUsableGroups("member"))
 	if !found || maxRatio != 0.11 {
 		t.Fatalf("expected auto max ratio 0.11 from configured candidates, got %v (found=%v)", maxRatio, found)
 	}
