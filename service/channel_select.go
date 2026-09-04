@@ -119,7 +119,10 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 	filters := GetChannelConstraints(param.Ctx).Filters
 
 	if param.TokenGroup == "auto" {
-		autoGroups := GetRequestAutoGroups(param.Ctx, userGroup)
+		autoGroups, groupErr := GetRequestAutoGroups(param.Ctx, userGroup)
+		if groupErr != nil {
+			return nil, selectGroup, groupErr
+		}
 		if len(autoGroups) == 0 {
 			return nil, selectGroup, errors.New("auto groups is not enabled")
 		}
@@ -326,7 +329,14 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 			if affinitySatisfied {
 				if usingGroup == "auto" {
 					userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
-					autoGroups, filterErr := FilterAutoGroupsByTokenRatioLimit(c, userGroup, GetRequestAutoGroups(c, userGroup))
+					autoGroups, groupErr := GetRequestAutoGroups(c, userGroup)
+					if groupErr != nil {
+						return nil, "", &ChannelSelectError{
+							StatusCode: http.StatusInternalServerError, MessageID: i18n.MsgDatabaseError,
+						}
+					}
+					var filterErr error
+					autoGroups, filterErr = FilterAutoGroupsByTokenRatioLimit(c, userGroup, autoGroups)
 					if filterErr != nil {
 						var limitErr *TokenGroupRatioLimitError
 						if errors.As(filterErr, &limitErr) {
