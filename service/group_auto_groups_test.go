@@ -42,7 +42,8 @@ func TestGetRequestAutoGroupsInheritedListIsNotLimited(t *testing.T) {
 	configureRequestAutoGroupsTest(t)
 	ctx := newRequestAutoGroupsContext()
 
-	groups := GetRequestAutoGroups(ctx, "default")
+	groups, err := GetRequestAutoGroups(ctx, "default")
+	require.NoError(t, err)
 
 	assert.Equal(t, []string{"vip", "default", "svip"}, groups)
 }
@@ -53,11 +54,14 @@ func TestGetRequestAutoGroupsFiltersBeforeApplyingCurrentLimit(t *testing.T) {
 	common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, []string{"revoked", "vip", "default", "svip"})
 	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`[]`))
 
-	groups := GetRequestAutoGroups(ctx, "default")
+	groups, err := GetRequestAutoGroups(ctx, "default")
+	require.NoError(t, err)
 
 	assert.Equal(t, []string{"vip", "default"}, groups)
 	require.NoError(t, setting.UpdateMaxTokenAutoGroups("1"))
-	assert.Equal(t, []string{"vip"}, GetRequestAutoGroups(ctx, "default"))
+	groups, err = GetRequestAutoGroups(ctx, "default")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"vip"}, groups)
 }
 
 func TestGetRequestAutoGroupsDoesNotFallBackAfterPermissionChange(t *testing.T) {
@@ -66,7 +70,8 @@ func TestGetRequestAutoGroupsDoesNotFallBackAfterPermissionChange(t *testing.T) 
 	common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, []string{"vip"})
 	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default"}`))
 
-	groups := GetRequestAutoGroups(ctx, "default")
+	groups, err := GetRequestAutoGroups(ctx, "default")
+	require.NoError(t, err)
 
 	assert.Empty(t, groups)
 }

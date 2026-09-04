@@ -197,10 +197,14 @@ func getModelListGroups(c *gin.Context) (modelListGroups, error) {
 	}
 
 	if tokenGroup == "auto" {
+		autoGroups, err := service.GetRequestAutoGroups(c, userGroup)
+		if err != nil {
+			return modelListGroups{}, err
+		}
 		return modelListGroups{
 			userGroup:   userGroup,
 			tokenGroup:  tokenGroup,
-			ownerGroups: service.GetRequestAutoGroups(c, userGroup),
+			ownerGroups: autoGroups,
 		}, nil
 	}
 
