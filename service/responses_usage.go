@@ -77,7 +77,7 @@ func (a *ResponsesUsageAccumulator) Finish() *dto.Usage {
 		a.imageCommitted = true
 	}
 	if a.usage.CompletionTokens == 0 {
-		if output := a.outputText.String(); output != "" {
+		if output := strings.TrimSpace(a.outputText.String()); output != "" {
 			a.usage.CompletionTokens = CountTextToken(output, a.info.GetUpstreamModelName())
 		}
 	}

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strconv"
 	"testing"
 
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -103,6 +104,21 @@ func TestResponsesUsageAccumulatorInterruptedTextFallback(t *testing.T) {
 			accumulator.Observe(&dto.ResponsesStreamResponse{Type: "response.output_text.delta", Delta: " late output"})
 			assert.Equal(t, usage, accumulator.Finish())
 			assert.Equal(t, 1, usage.CompletionTokens)
+		})
+	}
+}
+
+func TestResponsesUsageAccumulatorWhitespaceDeltaDoesNotEstimatePrompt(t *testing.T) {
+	for _, delta := range []string{" ", "  ", "\n", " \t "} {
+		t.Run(strconv.Quote(delta), func(t *testing.T) {
+			info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "gpt-4o"}}
+			info.SetEstimatePromptTokens(11291)
+			accumulator := NewResponsesUsageAccumulator(info)
+			accumulator.Observe(&dto.ResponsesStreamResponse{Type: "response.output_text.delta", Delta: delta})
+			usage := accumulator.Finish()
+			assert.Zero(t, usage.CompletionTokens)
+			assert.Zero(t, usage.PromptTokens)
+			assert.Zero(t, usage.TotalTokens)
 		})
 	}
 }
