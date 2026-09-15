@@ -91,15 +91,17 @@ func (a *ResponsesUsageAccumulator) Finish() *dto.Usage {
 		a.imageCounter.Commit(a.info)
 		a.imageCommitted = true
 	}
-	if a.usage.CompletionTokens == 0 {
-		if output := a.outputText.String(); output != "" {
-			a.usage.CompletionTokens = CountTextToken(output, a.info.GetUpstreamModelName())
-		}
+	rawOutput := a.outputText.String()
+	trimmedOutput := strings.TrimSpace(rawOutput)
+	if a.usage.CompletionTokens == 0 && trimmedOutput != "" {
+		a.usage.CompletionTokens = CountTextToken(trimmedOutput, a.info.GetUpstreamModelName())
 	}
 	// Upstream bills the prompt as soon as it starts generating, so a stream
 	// that produced any event but no usage still owes its input tokens unless
-	// upstream reported an explicit failure.
-	billsPrompt := a.usage.CompletionTokens != 0 || (a.started && !a.info.StreamStatus.ResponseFailed())
+	// upstream reported an explicit failure. Whitespace-only local output is
+	// not generation: those interrupted streams settle with no usage.
+	whitespaceOnly := rawOutput != "" && trimmedOutput == ""
+	billsPrompt := a.usage.CompletionTokens != 0 || (a.started && !a.info.StreamStatus.ResponseFailed() && !whitespaceOnly)
 	if a.usage.PromptTokens == 0 && billsPrompt {
 		a.usage.PromptTokens = a.info.GetEstimatePromptTokens()
 	}

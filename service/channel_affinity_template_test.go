@@ -420,7 +420,7 @@ func TestSessionRulesInheritOrOverrideGlobalDefault(t *testing.T) {
 				key := t.Name()
 				cacheKey := buildChannelAffinityCacheKeySuffix(rule, "test-model", "default", key)
 				cache := getChannelAffinityCache()
-				require.NoError(t, cache.SetWithTTL(cacheKey, 1, time.Minute))
+				require.NoError(t, cache.SetWithTTL(cacheKey, ChannelAffinityEntry{ChannelID: 1}, time.Minute))
 				t.Cleanup(func() { _, err := cache.DeleteMany([]string{cacheKey}); assert.NoError(t, err) })
 				ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 				ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
