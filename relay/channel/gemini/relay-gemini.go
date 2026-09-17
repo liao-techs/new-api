@@ -531,7 +531,10 @@ func GeminiEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 		upstreamUsage := buildUsageFromGeminiMetadata(upstream, info.GetEstimatePromptTokens())
 		usage = &upstreamUsage
 	} else {
-		usage = service.ResponseText2Usage(c, "", info.UpstreamModelName, info.GetEstimatePromptTokens())
+		fallback := dto.Usage{PromptTokens: info.GetEstimatePromptTokens()}
+		fallback.TotalTokens = fallback.PromptTokens
+		common.SetContextKey(c, constant.ContextKeyLocalCountTokens, true)
+		usage = &fallback
 	}
 	openAIResponse.Usage = *usage
 
