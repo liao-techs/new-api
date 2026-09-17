@@ -1,6 +1,8 @@
 package service
 
 import (
+	"strings"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -22,8 +24,12 @@ import (
 func ResponseText2Usage(c *gin.Context, responseText string, modeName string, promptTokens int) *dto.Usage {
 	common.SetContextKey(c, constant.ContextKeyLocalCountTokens, true)
 	usage := &dto.Usage{}
-	usage.PromptTokens = promptTokens
-	usage.CompletionTokens = EstimateTokenByModel(modeName, responseText)
+	if output := strings.TrimSpace(responseText); output != "" {
+		usage.CompletionTokens = EstimateTokenByModel(modeName, output)
+	}
+	if usage.CompletionTokens != 0 {
+		usage.PromptTokens = promptTokens
+	}
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	return usage
 }
