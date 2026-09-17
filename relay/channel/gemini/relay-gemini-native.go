@@ -58,7 +58,9 @@ func NativeGeminiEmbeddingHandler(c *gin.Context, resp *http.Response, info *rel
 
 	logger.LogDebug(c, "Gemini native embedding response body: %s", responseBody)
 
-	usage := service.ResponseText2Usage(c, "", info.UpstreamModelName, info.GetEstimatePromptTokens())
+	usage := &dto.Usage{PromptTokens: info.GetEstimatePromptTokens()}
+	usage.TotalTokens = usage.PromptTokens
+	common.SetContextKey(c, constant.ContextKeyLocalCountTokens, true)
 
 	if info.IsGeminiBatchEmbedding {
 		var geminiResponse dto.GeminiBatchEmbeddingResponse
