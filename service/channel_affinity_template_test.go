@@ -453,7 +453,7 @@ func TestSessionRulesInheritOrOverrideGlobalDefault(t *testing.T) {
 					cached, found, err := cache.Get(cacheKey)
 					require.NoError(t, err)
 					assert.True(t, found)
-					assert.Equal(t, 1, cached, "off does not refresh session bindings")
+					assert.Equal(t, ChannelAffinityEntry{ChannelID: 1}, cached, "off does not refresh session bindings")
 					_, err = cache.DeleteMany([]string{cacheKey})
 					require.NoError(t, err)
 					RecordChannelAffinity(ctx, 9)
