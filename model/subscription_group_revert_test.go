@@ -200,7 +200,8 @@ func TestAdminInvalidateUserSubscriptionRecoversPreviousGroupFromChain(t *testin
 	message, err := AdminInvalidateUserSubscription(renewal.Id)
 
 	require.NoError(t, err)
-	assert.Contains(t, message, "default")
+	require.NotNil(t, message)
+	assert.Contains(t, message.Error(), "default")
 	assert.Equal(t, "default", getSubscriptionGroupTestUserGroup(t, userID))
 }
 
@@ -233,7 +234,8 @@ func TestAdminDeleteUserSubscriptionRecoversPreviousGroupFromChain(t *testing.T)
 	message, err := AdminDeleteUserSubscription(renewal.Id)
 
 	require.NoError(t, err)
-	assert.Contains(t, message, "default")
+	require.NotNil(t, message)
+	assert.Contains(t, message.Error(), "default")
 	assert.Equal(t, "default", getSubscriptionGroupTestUserGroup(t, userID))
 	var count int64
 	require.NoError(t, DB.Model(&UserSubscription{}).Where("id = ?", renewal.Id).Count(&count).Error)
