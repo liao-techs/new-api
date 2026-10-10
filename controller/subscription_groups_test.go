@@ -19,6 +19,7 @@ import (
 )
 
 func TestSubscriptionGroupsAgreeAcrossKeysModelsPricingAndAuthentication(t *testing.T) {
+	require.NoError(t, i18n.Init())
 	db := setupModelListControllerTestDB(t)
 	require.NoError(t, db.AutoMigrate(&model.Token{}))
 	oldUsable, oldRatios, oldAuto := setting.UserUsableGroups2JSONString(), ratio_setting.GroupRatio2JSONString(), setting.AutoGroups2JsonString()
