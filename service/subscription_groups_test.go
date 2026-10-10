@@ -51,6 +51,7 @@ func TestMultiSubscriptionBillingPreferencesAndOverflow(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			seedMultiGroupBilling(t, tc.used)
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
 			info := &relaycommon.RelayInfo{UserId: 12361, UsingGroup: tc.group, RequestId: tc.name, IsPlayground: true, UserSetting: dto.UserSetting{BillingPreference: tc.preference}}
 			session, apiErr := NewBillingSession(c, info, 40)
 			if tc.denied {
@@ -82,6 +83,7 @@ func TestScopedSubscriptionReservationPinsAutoRetryAndRefund(t *testing.T) {
 		require.NoError(t, setting.UpdateAutoGroupsByJsonString(oldAuto))
 	})
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	c.Set("id", 12361)
 	common.SetContextKey(c, constant.ContextKeyAutoGroupIndex, 1)
 	common.SetContextKey(c, constant.ContextKeyTokenAutoGroups, []string{"codex-sub", "domestic-sub", "wallet"})
